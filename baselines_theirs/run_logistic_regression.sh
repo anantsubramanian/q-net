@@ -2,7 +2,7 @@
 
 #-------------------------------------REQUIRES:--------------------------------#
 #                                                                              #
-# 1. TensorFlow v0.12                                                          #
+# 1. TensorFlow v1.2                                                          #
 # 2. Training and dev feature files in PROTO_DUMPS_PATH folder                 #
 # 3. SQuAD v1.0 train and dev json files                                       #
 #                                                                              #
