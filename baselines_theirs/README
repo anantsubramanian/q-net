@@ -1,0 +1,9 @@
+We own none of this code. It was all written by the authors of [1]. Please refer to [2] for more details.
+
+run_logistic_regression.sh will allow you to run the code, but you must obtain the necessary packages and files (from [2] and [3]).
+
+[1] Rajpurkar, Pranav, et al. "Squad: 100,000+ questions for machine comprehension of text." arXiv preprint arXiv:1606.05250 (2016).
+
+[2] https://rajpurkar.github.io/SQuAD-explorer/
+
+[3] https://worksheets.codalab.org/worksheets/0xd53d03a48ef64b329c16b9baf0f99b0c/
