@@ -13,7 +13,8 @@ from utils import squad_utils
 from utils.squad_utils import LoadProtoData, DumpJsonPrediction
 from utils.squad_utils import MultipleProcess
 from utils.multiprocessor_cpu import MultiProcessorCPU
-from utils.evaluator import QaEvaluator
+# from utils.evaluator import QaEvaluator
+from evaluation.evaluator import Evaluator
 from non_learning_baseline.non_learning_agent import NonLearningAgent
 from learning_baseline.agent import Agent, QaPrediction
 from non_learning_baseline.sliding_window import SlidingWindowAgent
@@ -176,6 +177,8 @@ class ContextScoreAgent(NonLearningAgent):
                     scoreOrder = np.argsort(-slidingScores)
 
                     predictions[qa.id] = preds[scoreOrder[0:min(self.topK, scoreOrder.size) ] ].tolist()
+                    # cut for the top 1 prediction
+                    predictions[qa.id] = predictions[qa.id][0].ansStr
         returnDict[title] = predictions
 
 
@@ -191,36 +194,65 @@ class ContextScoreAgent(NonLearningAgent):
 
 if __name__ == "__main__":
     # dataFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-annotated.proto"
-    dataFile = "dataset/dev-annotated.proto"
-    # predFile = "/Users/Jian/Data/research/squad/output/non-learning-baseline/uni-bi-1460521688980_new.predict"
-    predFile = "dataset/context-score-sliding-window.pred"
-
-    subAgent = SlidingWindowAgent(lambDist=1, lenPenalty=0.4, randSeed=0)
+    dataFile = "./train-annotated.proto"
+   
+    subAgent = SlidingWindowAgent(lambDist=1, lenPenalty=0.5, randSeed=0)
     subAgent.LoadStopWords()
 
-    agent = ContextScoreAgent(1, 1, 10, randSeed=0, slidingWindowAgent=subAgent,
+    agent = ContextScoreAgent(1, 1, 0, randSeed=0, slidingWindowAgent=subAgent,
             articleLevel=False, topK=10)
     agent.LoadData(dataFile)
     agent.Predict(debug=False)
 
+    # jsonDataFile = "/Users/Jian/Data/research/squad/dataset/json/dev.json"
+    jsonDataFile = "./train.json"
+    evaluator = Evaluator(jsonDataFile)
 
-    # evalCandidateFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-candidatesal.proto"
-    # evalOrigFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-annotated.proto"
-    # vocabPath = "/Users/Jian/Data/research/squad/dataset/proto/vocab_dict"
+    exactMatchRate = evaluator.ExactMatch(agent.predictions)
+    F1 = evaluator.F1(agent.predictions)
+
+    print "exact rate ", exactMatchRate
+    print "F1 rate ", F1
+
+
+
+
+
+
+
+    # dataFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-annotated.proto"
+    # # dataFile = "./dev-annotated.proto"
+    # predFile = "/Users/Jian/Data/research/squad/output/non-learning-baseline/uni-bi-1460521688980_new.predict"
+    # # predFile = "./context-score-sliding-window.pred"
+
+    # subAgent = SlidingWindowAgent(lambDist=1, lenPenalty=0.4, randSeed=0)
+    # subAgent.LoadStopWords()
+
+    # agent = ContextScoreAgent(1, 1, 10, randSeed=0, slidingWindowAgent=subAgent,
+    #         articleLevel=False, topK=10)
+    # agent.LoadData(dataFile)
+    # agent.Predict(debug=False)
+
+
+    # # evalCandidateFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-candidatesal.proto"
+    # # evalOrigFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-annotated.proto"
+    # # vocabPath = "/Users/Jian/Data/research/squad/dataset/proto/vocab_dict"
     
-    evalCandidateFile = "dataset/dev-candidatesal.proto"
-    evalOrigFile = "dataset/dev-annotated.proto"
+    # evalCandidateFile = "./dev-candidatesal.proto"
+    # evalOrigFile = "./dev-annotated.proto"
+    # vocabPath = "./vocab_dict/proto/vocab_dict"
 
-    sampleAgent = Agent(floatType=tf.float32, idType=tf.int32, lossType="max-margin", articleLevel=agent.articleLevel)
-    sampleAgent.LoadEvalData(evalCandidateFile, evalOrigFile, doDebug=False)
-    sampleAgent.PrepareData(doTrain=False)
+    # sampleAgent = Agent(floatType=tf.float32, idType=tf.int32, lossType="max-margin", articleLevel=agent.articleLevel)
+    # sampleAgent.LoadEvalData(evalCandidateFile, evalOrigFile, doDebug=False)
+    # sampleAgent.LoadVocab(vocabPath)
+    # sampleAgent.PrepareData(doTrain=False)
 
-    evaluator = QaEvaluator(
-        metrics=("exact-match-top-1", "exact-match-top-3", "exact-match-top-5", 
-        "in-sentence-rate-top-1", "in-sentence-rate-top-3", "in-sentence-rate-top-5") )
-    evaluator.EvaluatePrediction(sampleAgent.evalSamples, agent.predictions)
+    # evaluator = QaEvaluator(wordToId=sampleAgent.wordToId, idToWord=sampleAgent.idToWord,
+    #     metrics=("exact-match-top-1", "exact-match-top-3", "exact-match-top-5", 
+    #     "in-sentence-rate-top-1", "in-sentence-rate-top-3", "in-sentence-rate-top-5") )
+    # evaluator.EvaluatePrediction(sampleAgent.evalSamples, agent.predictions)
  
-    agent.DumpPrediction(predFile)
+    # agent.DumpPrediction(predFile)
 
 # rm src.zip vocab_dict
 # zip -r src.zip src

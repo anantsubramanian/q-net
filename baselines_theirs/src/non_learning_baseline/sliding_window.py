@@ -1,3 +1,4 @@
+import pdb
 import numpy as np
 import multiprocessing as mp
 import random
@@ -136,7 +137,7 @@ class SlidingWindowAgent(NonLearningAgent):
                 qS = qa.question.sentence[0]
                 qUnigram = [token.word.lower() for token in qS.token]
                 if self.articleLevel:
-                    for iPara, para, unigrams, spans \
+                    for iPara, (para, unigrams, spans) \
                         in enumerate(zip(self.data[title].paragraphs, contextUni, contextSpan) ):
                         # traverse each sentence in the paragraph
                         for iSen, (s, uni, spanList) in enumerate(zip(para.context.sentence, unigrams, spans) ):
@@ -152,7 +153,7 @@ class SlidingWindowAgent(NonLearningAgent):
                                 scores.append(score)
                                 ansStr = ReconstructStrFromSpan(s.token, span)
                                 ansToken = s.token[span[0]:span[1] ]
-                                preds.append(QaPrediction(title, qaId, ansStr, iPara, iSen, ansToken=ansToken) )
+                                preds.append(QaPrediction(title, qa.id, ansStr, iPara, iSen, ansToken=ansToken) )
                 else:
                     iPara = qaParaId
                     para = self.data[title].paragraphs[iPara]
@@ -176,7 +177,7 @@ class SlidingWindowAgent(NonLearningAgent):
                 scores = np.array(scores)
                 preds = np.array(preds)
                 scoreOrder = np.argsort(-scores)
-                predictions[qaId] = preds[scoreOrder][0:min(self.topK, preds.size) ].tolist()
+                predictions[qa.id] = preds[scoreOrder][0:min(self.topK, preds.size) ].tolist()
         returnDict[title] = predictions
 
 
@@ -191,14 +192,14 @@ class SlidingWindowAgent(NonLearningAgent):
 
 
 if __name__ == "__main__":
-    dataFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-annotated.proto"
-    articleLevel = False
+    dataFile = "../../archive/dev-anotated/dev-annotated.proto"
+    articleLevel = True
     agent = SlidingWindowAgent(0, randSeed=0, articleLevel=articleLevel, topK=10)
     agent.LoadData(dataFile)
     agent.Predict()
 
-    evalCandidateFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-candidatesal.proto"
-    evalOrigFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-annotated.proto"
+    evalCandidateFile = "../../archive/dev-candidatesal/dev-candidatesal.proto"
+    evalOrigFile = "../../archive/dev-anotated/dev-annotated.proto"
     vocabPath = "/Users/Jian/Data/research/squad/dataset/proto/vocab_dict"
     sampleAgent = Agent(floatType=tf.float32, idType=tf.int32, lossType="max-margin", articleLevel=articleLevel)
     sampleAgent.LoadEvalData(evalCandidateFile, evalOrigFile)

@@ -3,7 +3,7 @@ import multiprocessing as mp
 import random
 import json
 import sys
-import tensorflow as tf
+# import tensorflow as tf
 reload(sys)
 sys.setdefaultencoding('utf-8')
 sys.path.append("./src/")
@@ -13,7 +13,7 @@ from utils import squad_utils
 from utils.squad_utils import LoadProtoData, DumpJsonPrediction
 from utils.squad_utils import MultipleProcess
 from utils.multiprocessor_cpu import MultiProcessorCPU
-from utils.evaluator import QaEvaluator
+from evaluation_random.evaluator import Evaluator
 from non_learning_baseline.non_learning_agent import NonLearningAgent
 from learning_baseline.agent import Agent, QaPrediction
 
@@ -124,6 +124,7 @@ class RandGuessAgent(NonLearningAgent):
                 random.shuffle(preds)
 
                 predictions[qa.id] = preds[0:min(self.topK, len(preds) ) ]
+                predictions[qa.id] = predictions[qa.id][0].ansStr
         returnDict[title] = predictions
 
 
@@ -139,34 +140,45 @@ class RandGuessAgent(NonLearningAgent):
 
 if __name__ == "__main__":
     # dataFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-annotated.proto"
-    dataFile = "./dev-annotated.proto"
+    path = "../../archive/dev-anotated/"
+    dataFile = path+"dev-annotated.proto"
     # predFile = "/Users/Jian/Data/research/squad/output/non-learning-baseline/uni-bi-1460521688980_new.predict"
     predFile = "./random-guess.pred"
 
-    agent = RandGuessAgent(randSeed=0, articleLevel=False, topK=10)
+    agent = RandGuessAgent(randSeed=0, articleLevel=False, topK=1)
     agent.LoadData(dataFile)
     agent.LoadStopWords()
     agent.Predict(debug=False)
     agent.DumpPrediction(predFile)
+
+    # jsonDataFile = "/Users/Jian/Data/research/squad/dataset/json/dev.json"
+    jsonDataFile = path + "../../data/dev-v1.0.json"
+    evaluator = Evaluator(jsonDataFile)
+
+    exactMatchRate = evaluator.ExactMatch(agent.predictions)
+    F1 = evaluator.F1(agent.predictions)
+
+    print "exact rate ", exactMatchRate
+    print "F1 rate ", F1
 
 
     # evalCandidateFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-candidatesal.proto"
     # evalOrigFile = "/Users/Jian/Data/research/squad/dataset/proto/dev-annotated.proto"
     # vocabPath = "/Users/Jian/Data/research/squad/dataset/proto/vocab_dict"
     
-    evalCandidateFile = "./dev-candidatesal.proto"
-    evalOrigFile = "./dev-annotated.proto"
-    vocabPath = "./vocab_dict/proto/vocab_dict"
+    # evalCandidateFile = "./dev-candidatesal.proto"
+    # evalOrigFile = "./dev-annotated.proto"
+    # vocabPath = "./vocab_dict/proto/vocab_dict"
 
-    sampleAgent = Agent(floatType=tf.float32, idType=tf.int32, lossType="max-margin", articleLevel=agent.articleLevel)
-    sampleAgent.LoadEvalData(evalCandidateFile, evalOrigFile, doDebug=False)
-    sampleAgent.LoadVocab(vocabPath)
-    sampleAgent.PrepareData(doTrain=False)
+    # sampleAgent = Agent(floatType=tf.float32, idType=tf.int32, lossType="max-margin", articleLevel=agent.articleLevel)
+    # sampleAgent.LoadEvalData(evalCandidateFile, evalOrigFile, doDebug=False)
+    # sampleAgent.LoadVocab(vocabPath)
+    # sampleAgent.PrepareData(doTrain=False)
 
-    evaluator = QaEvaluator(wordToId=sampleAgent.wordToId, idToWord=sampleAgent.idToWord,
-        metrics=("exact-match-top-1", "exact-match-top-3", "exact-match-top-5", 
-        "in-sentence-rate-top-1", "in-sentence-rate-top-3", "in-sentence-rate-top-5") )
-    evaluator.EvaluatePrediction(sampleAgent.evalSamples, agent.predictions)
+    # evaluator = QaEvaluator(wordToId=sampleAgent.wordToId, idToWord=sampleAgent.idToWord,
+    #     metrics=("exact-match-top-1", "exact-match-top-3", "exact-match-top-5", 
+    #     "in-sentence-rate-top-1", "in-sentence-rate-top-3", "in-sentence-rate-top-5") )
+    # evaluator.EvaluatePrediction(sampleAgent.evalSamples, agent.predictions)
  
 # zip -r vocab_dict.zip dataset/proto/vocab_dict
 
@@ -176,6 +188,7 @@ if __name__ == "__main__":
 # zip -r vocab_dict.zip dataset/proto/vocab_dict
 # cl upload src.zip
 # cl upload vocab_dict.zip
+
 # cl run dev-annotated.proto:0x753738/dev-annotated.proto dev-candidatesal.proto:0xdfa81b/dev-candidatesal.proto vocab_dict:vocab_dict src:src random_guess.py:src/non_learning_baseline/random_guess.py "python random_guess.py" -n random_guess_latest --request-docker-image stanfordsquad/ubuntu:1.1 --request-queue host=john3
     
 
