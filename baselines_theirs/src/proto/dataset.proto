@@ -1,0 +1,20 @@
+syntax = "proto2";
+
+import "CoreNLP.proto";
+
+message Article {
+  required string title = 1;
+  repeated Paragraph paragraphs = 2;
+}
+
+message Paragraph {
+  required edu.stanford.nlp.pipeline.Document context = 1;
+  repeated QuestionAnswer qas = 2;
+}
+
+message QuestionAnswer {
+  required string id = 1;
+  required edu.stanford.nlp.pipeline.Document question = 2;
+  repeated edu.stanford.nlp.pipeline.Document answers = 3;
+  repeated int32 answerOffsets = 4;
+}

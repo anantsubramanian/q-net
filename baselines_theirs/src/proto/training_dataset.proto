@@ -1,0 +1,77 @@
+syntax = "proto2";
+
+message TrainingArticle {
+  required string title = 1;
+ 
+  // Questions and answers for the article-level version of the data.
+  repeated TrainingQuestionAnswer questions = 2;
+  repeated CandidateAnswer candidateAnswers = 3;
+
+  // Contains the questions and answers for the paragraph-level version of the
+  // data.
+  repeated TrainingParagraph paragraphs = 4;
+}
+
+message TrainingParagraph {
+  repeated TrainingQuestionAnswer questions = 1;
+  repeated CandidateAnswer candidateAnswers = 2;
+}
+
+message TrainingQuestionAnswer {
+  required string id = 1;
+
+  // Index of the correct answer in the candidateAnswers array. If multiple
+  // spans contain the answer, the shortest such span is picked as the correct
+  // answer.
+  // TODO(klopyrev): The answer could appear multiple times in different
+  // sentences and we could be picking the wrong sentence here. Not sure if
+  // that's a concern.
+  required int32 correctAnswerIndex = 2;
+
+  // Not filled in unless feature extraction is enabled.
+  repeated CandidateAnswerFeatures candidateAnswerFeatures = 3;
+}
+
+// A possible candidate answer. Each answer is a span from the parse tree
+// of the text. The bottom two layers (i.e. POS and word) and the top layer
+// (i.e. ROOT) of the parse tree are skipped. For example, if the parse tree
+// is (ROOT -> NP -> NN -> Word) only the NP would be included.
+message CandidateAnswer {
+  optional int32 paragraphIndex = 1;
+  optional int32 sentenceIndex = 2;
+  optional int32 spanBeginIndex = 3;
+  optional int32 spanLength = 4;
+}
+
+message CandidateAnswerFeatures {
+  repeated int32 indices = 1 [packed=true];
+  
+  // Not filled in when bucketization is enabled. In that case, it is assumed
+  // to be 1.0.
+  repeated float values = 2 [packed=true];
+}
+
+message UnigramWeight {
+  required string lemma = 1;
+  required float weight = 2;
+}
+
+message BigramWeight {
+  required string lemma1 = 1;
+  required string lemma2 = 2;
+  required float weight = 3;
+}
+
+message DictionaryEntry {
+  required string name = 1;
+  required int32 index = 2;
+  required int64 count = 3;
+}
+
+message BucketizerConfig {
+  message FeatureBucketizerConfig {
+    required string name = 1;
+    repeated float lower_bounds = 2; 
+  }
+  repeated FeatureBucketizerConfig features = 1;
+}
