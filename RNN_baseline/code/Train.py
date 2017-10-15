@@ -1,4 +1,5 @@
 import argparse
+import numpy as np
 import random
 import sys
 import time
@@ -45,7 +46,7 @@ train_data, dev_data, test_data = \
             args.max_dev_articles, args.dump_pickles)
 #------------------------------------------------------------------------------#
 
-#--------------------------------- Preprocess data ----------------------------#
+#------------- ---------------- Preprocess data -------------------------------#
 train = train_data.data
 dev = dev_data.data
 test = test_data.data
@@ -55,13 +56,16 @@ test_batch_size = args.test_batch_size
 # Sort data by increasing question+answer length, for efficient batching.
 train.sort(cmp=lambda x,y: len(x[0]) + len(x[1]) - (len(y[0]) + len(y[1])))
 dev.sort(cmp=lambda x,y: len(x[0]) + len(x[1]) - (len(y[0]) + len(y[1])))
+train_1_examples = sum([ example[2] for example in train ])
+dev_1_examples = sum([ example[2] for example in dev ])
+test_1_examples = sum([ example[2] for example in test ])
 
 train_order = [ i for i in range(0, len(train), batch_size) ]
 dev_order = [ i for i in range(0, len(dev), test_batch_size) ]
 test_order = [ i for i in range(0, len(test), test_batch_size) ]
 #------------------------------------------------------------------------------#
 
-#---------------------------------- Create model ------------------------------#
+#------------------------------ Create model ----------------------------------#
 config = { 'embed_size' : args.embed_size,
            'nwords' : train_data.dictionary.size(),
            'hidden_size' : args.hidden_size,
@@ -75,7 +79,7 @@ config = { 'embed_size' : args.embed_size,
 model = QA_Model(config)
 #------------------------------------------------------------------------------#
 
-#-------------------------------- Train System --------------------------------#
+#------------------------------ Train System ----------------------------------#
 tf_config = tf.ConfigProto()
 tf_config.gpu_options.allow_growth = True
 
@@ -127,12 +131,15 @@ with tf.Session(config=tf_config) as sess:
           print "[Average loss : %.5f]" % (train_loss_sum/(i+1)),
 
       # Print train stats for epoch
-      print 'Epoch %d:\nTrain Loss: %.4f (in time: %.2f s)' %\
+      print "\nEpoch %d: Train Loss: %.4f (in time: %.2f s)" %\
         (EPOCH, train_loss_sum/len(train_order), (time.time() - start_t))
 
       # Run pass over dev data to compute stats
       dev_start_t = time.time()
       dev_loss_sum = 0.0
+      dev_error_sum = 0
+      dev_error0_sum = 0
+      dev_error1_sum = 0
       for i, num in enumerate(dev_order):
           print "\r[Dev] - [%.2f s left] - [%d of %d batches] " %\
             ((time.time()-dev_start_t)*(len(dev_order)-i-1)/(i+1), i+1, len(dev_order)),
@@ -149,8 +156,8 @@ with tf.Session(config=tf_config) as sess:
           ques_in = [ pad(example[0], 0, max_ques_len) for example in dev_batch ]
           labels = [ example[2] for example in dev_batch ]
 
-          dev_loss =\
-            sess.run(model.loss,
+          dev_loss, predictions =\
+            sess.run([model.loss, model.predictions],
                      feed_dict = { model.ans_input: ans_in,
                                    model.ans_lens: ans_lens_in,
                                    model.ques_input: ques_in,
@@ -161,9 +168,21 @@ with tf.Session(config=tf_config) as sess:
           dev_loss_sum += dev_loss
           print "[Average loss : %.5f]" % (dev_loss_sum/(i+1)),
 
+          # Compute overall prediction-error, error for 0s, and error for 1s
+          dev_errors = np.abs(predictions-labels)
+          dev_error_sum += np.sum(dev_errors)
+          dev_error0_sum += np.sum((1-np.array(labels)) * dev_errors)
+          dev_error1_sum += np.sum(np.array(labels) * dev_errors)
+
       # Print dev stats for epoch
-      print 'Dev Loss: %.4f (in time: %.2f s)' %\
+      print "\nDev Loss: %.4f (in time: %.2f s)" %\
         (dev_loss_sum/len(dev_order), (time.time() - dev_start_t))
+      print ("Total error: %d/%d (%.2f%%), 1 errors: %d/%d (%.2f%%), " +\
+            "0 errors: %d/%d (%.2f%%)") %\
+            (dev_error_sum, len(dev), 100 * float(dev_error_sum)/len(dev),
+             dev_error1_sum, dev_1_examples, 100 * float(dev_error1_sum)/dev_1_examples,
+             dev_error0_sum, len(dev)-dev_1_examples,
+             100 * float(dev_error0_sum)/(len(dev)-dev_1_examples))
 
       # Save model parameters from this epoch.
       save_path = saver.save(sess, args.model_dir + 'model' + str(EPOCH) + '.ckpt')

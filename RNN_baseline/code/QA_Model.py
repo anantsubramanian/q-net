@@ -73,6 +73,9 @@ class QA_Model:
       self.b_sm = tf.Variable(tf.random_uniform([output_dim]))
       self.logits = tf.matmul(self.comb_embs, self.W_sm) + self.b_sm
 
+    # Get the 0-1 prediction value
+    self.predictions = tf.argmax(self.logits, axis=1)
+
     # Compute loss. More weight is given to the positive label examples if the
     # 'unequal_neg' flag is set.
     with tf.variable_scope("loss"):
