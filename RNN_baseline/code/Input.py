@@ -18,6 +18,7 @@ class Dictionary:
     return len(self.index_to_word)
 
   def add_or_get_index(self, word):
+    # We ignore punctuation symbols
     if word in string.punctuation:
       return None
     if self.lowercase:
@@ -61,6 +62,7 @@ class Data:
     del self.questions
     del self.paragraphs
     del self.question_to_paragraph
+    del self.data
 
   def dump_pickle(self, filename):
     with open(filename, 'wb') as fout:
@@ -79,10 +81,12 @@ class Data:
 
     seen_answers = set()
     for qa in para_qas:
+      # Questions of length <= 2 words are ignored
       if len(word_tokenize(qa['question'])) <= 2:
         continue
       self.question_to_paragraph[qa['id']] = len(self.paragraphs)
       self.questions[qa['id']] = qa['question']
+
       # Tokenize question
       processed_question = [ self.dictionary.add_or_get_index(word) \
                                for word in word_tokenize(qa['question']) ]
@@ -101,10 +105,10 @@ class Data:
       # Create question-answer pairs
       for processed_answer in processed_answers:
         self.data.append([processed_question, processed_answer, 1.0, qa['id']])
-      
+
       # If num_candidate is provided, sample those many incorrect candidate answers
       # from a paragraph, for each question.
-      # Otherwise, generate all ~L(L-1)/2 incorrect candidates.
+      # Otherwise, generate all ~L(L-1)/2 incorrect candidates for each sentence.
       tokenized_para = [ [ self.dictionary.add_or_get_index(word) \
                            for word in word_tokenize(sent) ] \
                              for sent in sent_tokenize(para_text) ]
@@ -115,6 +119,9 @@ class Data:
         print "Found no sentences for para:", para_text
         continue
       sent_lens = [ len(x) for x in tokenized_para ]
+
+      # If the number of incorrect candidates to sample is set, use sampling.
+      # Otherwise, generate ~L(L-1)/2 candidate answers.
       if self.num_incorrect_candidates:
         candidate_answers = []
         while len(candidate_answers) < self.num_incorrect_candidates:
@@ -129,13 +136,16 @@ class Data:
         for candidate_answer in candidate_answers:
           self.data.append([processed_question, candidate_answer, 0.0, qa['id']])
       else:
+        seen = set()
         for sent in tokenized_para:
           for start_index in range(len(sent)):
             for end_index in range(start_index+1, len(sent)):
-              candidate_answer = tokenized_para[start_index:end_index]
-              if ",".join(map(str,candidate_answer)) in correct_answers:
+              candidate_answer = sent[start_index:end_index]
+              candidate_str = ",".join(map(str,candidate_answer))
+              if candidate_str in correct_answers or candidate_str in seen:
                 continue
               self.data.append([processed_question, candidate_answer, 0.0, qa['id']])
+              seen.add(candidate_str)
 
     # Store paragraph text
     self.paragraphs.append(para_text)
@@ -157,4 +167,72 @@ class Data:
                   % (article_index+1, para_index+1),
           sys.stdout.flush()
       print ""
+
+def pad(seq, element, length):
+    assert len(seq) <= length
+    r = seq + [element] * (length - len(seq))
+    assert len(r) == length
+    return r
+
+def read_data(train_json, train_pickle, dev_json, dev_pickle, test_pickle,
+              num_incorrect_samples, max_train_articles, max_dev_articles,
+              dump_pickles, load_test=False):
+  train_data = Data(num_incorrect_candidates=num_incorrect_samples)
+  print "Reading training data."
+  if train_json:
+    train_data.read_from_file(train_json, max_train_articles)
+    if dump_pickles:
+      assert not train_pickle == None
+      dump_pickle(train_pickle)
+  else:
+    train_data = train_data.read_from_pickle(train_pickle)
+
+  print "Done."
+  print "Vocab size is:", train_data.dictionary.size()
+  print "Sample words:", train_data.dictionary.index_to_word[:10]
+
+  dev_data = Data(train_data.dictionary)
+  test_data = Data(train_data.dictionary)
+  print "Reading dev/test data."
+  if dev_json:
+    dev_data.read_from_file(dev_json, max_dev_articles)
+
+    # Batch together data points by paragraph id
+    para_to_examples = []
+    for example in dev_data.data:
+      if dev_data.question_to_paragraph[example[3]] >= len(para_to_examples):
+        para_to_examples.append([])
+      para_to_examples[dev_data.question_to_paragraph[example[3]]].append(example)
+    new_dev_data = []
+
+    # First 200 paragraphs are dev data, remaining are test data
+    for para in para_to_examples[:200]:
+      for example in para:
+        new_dev_data.append(example)
+    new_test_data = []
+    for para in para_to_examples[200:]:
+      for example in para:
+        new_test_data.append(example)
+
+    # Create test data
+    test_data = Data(dev_data.dictionary)
+    test_data.questions = dev_data.questions
+    test_data.question_to_paragraph = dev_data.question_to_paragraph
+    test_data.num_incorrect_candidates = dev_data.num_incorrect_candidates
+    test_data.paragraphs = dev_data.paragraphs[200:]
+    dev_data.paragraphs = dev_data.paragraphs[:200]
+    dev_data.data = new_dev_data
+    test_data.data = new_test_data
+
+    if dump_pickles:
+      assert not dev_pickle == None and not test_pickle == None
+      dev_data.dump_pickle(dev_pickle)
+      test_data.dump_pickle(test_pickle)
+  else:
+    dev_data = dev_data.read_from_pickle(dev_pickle)
+    if load_test:
+      test_data = test_data.read_from_pickle(test_pickle)
+  print "Done."
+
+  return train_data, dev_data, test_data
 
