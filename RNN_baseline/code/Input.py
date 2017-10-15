@@ -105,10 +105,15 @@ class Data:
       # If num_candidate is provided, sample those many incorrect candidate answers
       # from a paragraph, for each question.
       # Otherwise, generate all ~L(L-1)/2 incorrect candidates.
-      tokenized_para = [ [ self.dictionary.get_index(word) \
-                           for word in sent ] for sent in sent_tokenize(para_text) ]
+      tokenized_para = [ [ self.dictionary.add_or_get_index(word) \
+                           for word in word_tokenize(sent) ] \
+                             for sent in sent_tokenize(para_text) ]
       tokenized_para = [ filter(None, x) for x in tokenized_para ]
+      tokenized_para = [ x for x in tokenized_para if len(x) > 0 ]
       sentences = len(tokenized_para)
+      if sentences == 0:
+        print "Found no sentences for para:", para_text
+        continue
       sent_lens = [ len(x) for x in tokenized_para ]
       if self.num_incorrect_candidates:
         candidate_answers = []
