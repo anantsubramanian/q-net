@@ -1,9 +1,10 @@
 import argparse
+import pdb
 import random
 import sys
 import time
 import tensorflow as tf
-
+import numpy
 from Input import Dictionary, Data
 from QA_Model import QA_Model
 
@@ -33,7 +34,7 @@ def init_parser():
   parser.add_argument('--learning_rate', type=float, default=0.05)
   parser.add_argument('--ckpt', type=int, default=0)
   parser.add_argument('--epochs', type=int, default=10)
-  parser.add_argument('--model_dir', default='./')
+  parser.add_argument('--model_dir', default='./testing')
   parser.add_argument('--batch_size', type=int, default=32)
   parser.add_argument('--dropout_keep_value', type=float, default=1.0)
   parser.add_argument('--optimizer', default='Adam')
@@ -94,14 +95,35 @@ with tf.Session() as sess:
   start_time=time.time()
   print('Starting training at %r' % (start_time))
 
+  
   train = train_data.data
   test = dev_data.data
   batch_size = args.batch_size
   train.sort(cmp=lambda x,y: len(x[0]) + len(x[1]) - (len(y[0]) + len(y[1])))
-  train_order = [ i for i in range(0, len(train), batch_size) ]
+  labels_l = numpy.array([example[2] for example in train ])
+  train_q = numpy.array([example[0] for example in train ])
+  train_a = numpy.array([example[1] for example in train ])
+  pdb.set_trace()
+  neg_index = numpy.where(labels_l==0)[0]
+  pos_index = numpy.where(labels_l==1)[0]
+  pos_train_ques = train_q[pos_index]
+  pos_train_ans = train_a[pos_index]
+  neg_train_ans = train_a[neg_index]
+  neg_train_ques = train_q[neg_index] 
+  train_order = [ i for i in range(0, 2*len(pos_train_ques), batch_size) ]
   test_order = [ i for i in range(0, len(test), batch_size) ]
 
   for ITER in range(config['cont']+1,args.epochs):
+      neg_epoch_indices = numpy.random.randint(0,len(neg_train_ans),len(pos_train_ans))
+      train_ques = numpy.concatenate((pos_train_ques ,neg_train_ques[neg_epoch_indices]))
+      train_ans = numpy.concatenate((pos_train_ans, neg_train_ans[neg_epoch_indices]))
+      train_labels = numpy.array([1]*len(pos_train_ans) + [0]*len(pos_train_ans))
+      ind = [i for i in range(len(train_labels))]
+      random.shuffle(ind)
+      train_ques = train_ques[ind]
+      train_ans = train_ans[ind] 
+      train_labels = train_labels[ind]
+      
       random.shuffle(train_order)
       start_t = time.time()
       train_loss_sum = 0.0
@@ -110,13 +132,16 @@ with tf.Session() as sess:
           print "\r%d of %d batches processed " % (i+1, len(train_order)),
           print "(time left = %.2f seconds) : " % ((time.time()-start_t) * (len(train_order)-i-1) / (i+1)),
           sys.stdout.flush()
-          train_batch = train[num: num+batch_size]
-          ans_lens_in = [len(example[1]) for example in train_batch ]
-          ques_lens_in = [len(example[0]) for example in train_batch ]
-          labels = [example[2] for example in train_batch ]
+          train_ques_batch = train_ques[num: num+batch_size]
+          train_ans_batch = train_ans[num: num+batch_size]          
+          train_labels_batch = train_labels[num: num+batch_size]
+
+          ans_lens_in = [len(example) for example in train_ans_batch ]
+          ques_lens_in = [len(example) for example in train_ques_batch ]
+          labels = [example for example in train_labels_batch ]
           
-          ans_in =[pad(example[1], 0, max(ans_lens_in)) for example in train_batch ]
-          ques_in =[pad(example[0], 0, max(ques_lens_in)) for example in train_batch ]
+          ans_in =[pad(example, 0, max(ans_lens_in)) for example in train_ans_batch ]
+          ques_in =[pad(example, 0, max(ques_lens_in)) for example in train_ques_batch ]
 
           train_loss, _ = sess.run([model.loss, model.optimizer], feed_dict={model.ans_input: ans_in, model.ans_lens: ans_lens_in, model.ques_input: ques_in, model.ques_lens: ques_lens_in, model.labels:labels, model.keep_prob : config['drop_emb']})
           train_loss_sum += train_loss
