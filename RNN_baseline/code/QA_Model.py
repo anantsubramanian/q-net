@@ -24,43 +24,37 @@ class QA_Model:
             self.ans_embedding = tf.get_variable("ans embedding", [nwords, ans_embed_size])
             self.ans_embs = tf.nn.embedding_lookup(self.ans_embedding, self.ans_input)
 
+        with tf.variable_scope("Answer RNN"):
+            self.ans_cell = tf.contrib.rnn.LSTMCell(hidden_size, forget_bias=0.0)
+            self.ans_cell = tf.contrib.rnn.DropoutWrapper( self.ans_cell, output_keep_prob=self.keep_prob)
+            self.ans_cell = tf.contrib.rnn.MultiRNNCell([self.ans_cell] * num_layers)
+            self.ans_rnn_outputs, _ = tf.nn.dynamic_rnn(self.ans_cell, self.ans_embs, sequence_length=self.ans_lens, dtype=tf.float32)
+            ans_outputs = tf.reshape(self.ans_rnn_outputs[:,-1], [-1, hidden_size],name='answer RNN_output')
+            #outputs = tf.contrib.layers.fully_connected(
+            #  activation_fn = tf.nn.relu, inputs = outputs, num_outputs = 500,
+            #  scope = "Fully_connect_2", biases_initializer = tf.contrib.layers.xavier_initializer())
+
         with tf.variable_scope("Question Embedding"):
             self.ques_embedding = tf.get_variable("ques embedding", [nwords, ques_embed_size])
             self.ques_embs = tf.nn.embedding_lookup(self.ques_embedding, self.ques_input)
 
-        #emb combine 
-        self.comb_embs=tf.concat([self.ans_embs,self.ques_embs],2) #2nd dimension if including Batch .. 
+        with tf.variable_scope("Question RNN"):
+            self.ques_cell = tf.contrib.rnn.LSTMCell(hidden_size, forget_bias=0.0)
+            self.ques_cell = tf.contrib.rnn.DropoutWrapper( self.ques_cell, output_keep_prob=self.keep_prob)
+            self.ques_cell = tf.contrib.rnn.MultiRNNCell([self.ques_cell] * num_layers)
+            self.ques_rnn_outputs, _ = tf.nn.dynamic_rnn(self.ques_cell, self.ques_embs, sequence_length=self.ques_lens, dtype=tf.float32)
+            ques_outputs = tf.reshape(self.ques_rnn_outputs[:,-1], [-1, hidden_size],name='question RNN_output')
+            #outputs = tf.contrib.layers.fully_connected(
+            #  activation_fn = tf.nn.relu, inputs = outputs, num_outputs = 500,
+            #  scope = "Fully_connect_2", biases_initializer = tf.contrib.layers.xavier_initializer())
+
+        #Combine 
+        self.comb_embs=tf.concat([ans_outputs,ques_outputs],1) #2nd dimension if including Batch .. 
  
-        #outputs = tf.expand_dims(self.comb_embs, -1)
-
-        #with tf.variable_scope('conv1_0') as scope:
-        #    kernel = tf.Variable(tf.truncated_normal([3, 3, 1, 8], dtype=tf.float32, stddev=1e-1))
-        #    outputs = tf.nn.conv2d(outputs, kernel, [1, 1, 1, 1], padding='SAME',  use_cudnn_on_gpu=True, name="conv0") # (B,T,F,1) -> (B,T,F,32)
-        #    biases = tf.Variable(tf.constant(0.0, shape=[8], dtype=tf.float32),
-        #                             trainable=True, name='biases_conv0')
-        #    outputs= tf.nn.bias_add(outputs, biases)
-        #    outputs = tf.nn.relu(outputs, name="relu_conv0")
-
-        #outputs = tf.reshape(outputs,[tf.shape(outputs)[0],tf.shape(outputs)[1],(int((int(embed_size))*8))])
-
         outputs = tf.contrib.layers.fully_connected(
-            activation_fn = tf.nn.relu, inputs = outputs, num_outputs = 500,
+            activation_fn = tf.nn.relu, inputs = outputs, num_outputs = 100,
             scope = "Fully_connect_1", biases_initializer = tf.contrib.layers.xavier_initializer())
 
-
-        #self.cnn_output_drop = tf.nn.dropout(outputs,self.keep_prob)
-
-
-        #Batch major
-        with tf.variable_scope("RNN"):
-            self.cell = tf.contrib.rnn.LSTMCell(hidden_size, forget_bias=0.0, state_is_tuple=False)
-            self.cell = tf.contrib.rnn.DropoutWrapper( self.cell, output_keep_prob=self.keep_prob)
-            self.cell = tf.contrib.rnn.MultiRNNCell([self.cell] * num_layers, state_is_tuple=False)
-            self.rnn_outputs, _ = tf.nn.dynamic_rnn(self.cell, outputs, sequence_length=tf.add(self.ans_lens,self.ques_lens), dtype=tf.float32)
-            outputs = tf.reshape(self.rnn_outputs[:,-1], [-1, hidden_size],name='rnn_output')
-            outputs = tf.contrib.layers.fully_connected(
-              activation_fn = tf.nn.relu, inputs = outputs, num_outputs = 500,
-              scope = "Fully_connect_2", biases_initializer = tf.contrib.layers.xavier_initializer())
 
         with tf.variable_scope("Affine"):
             self.W_sm = tf.Variable(tf.random_uniform([hidden_size, 2]))
