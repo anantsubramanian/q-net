@@ -1,3 +1,7 @@
+from gensim.models.keyedvectors import KeyedVectors
+
+import numpy as np
+import sys
 import tensorflow as tf
 
 class QA_Model:
@@ -10,6 +14,8 @@ class QA_Model:
     lr_rate = config['lr']
     unequal_neg = config['unequal_neg']
     optimizer = config['optimizer']
+    word2vec_path = config['word2vec_path']
+    index_to_word = config['index_to_word']
     output_dim = 2
     incorrect_ratio = float(config['incorrect_ratio'])
 
@@ -21,9 +27,30 @@ class QA_Model:
     self.labels = tf.placeholder(tf.int32, [None], name='labels')
     self.keep_prob = tf.placeholder(tf.float32)
 
-    # Look-up question and answer embeddings
+    # Look-up question and answer embeddings. Use word2vec initialization if provided.
     with tf.variable_scope("embedding"):
-      self.embedding = tf.get_variable("embedding", [nwords, embed_size])
+      if word2vec_path:
+        print "Loading word2vec vectors."
+        word2vec = KeyedVectors.load_word2vec_format(word2vec_path, binary=True)
+        print "Done."
+        sys.stdout.flush()
+        assert index_to_word is not None
+
+        # Create initial embedding matrix
+        embedding = []
+        for word in index_to_word:
+          if word in word2vec.wv:
+            embedding.append(word2vec.wv[word])
+          else:
+            embedding.append(np.array([0.0] * embed_size))
+
+        embedding = np.array(embedding)
+        self.embedding = tf.get_variable("embedding", shape=embedding.shape,
+                                         initializer=tf.constant_initializer(embedding),
+                                         trainable=True)
+      else:
+        self.embedding = tf.get_variable("embedding", [nwords, embed_size])
+
       self.ans_embs = tf.nn.embedding_lookup(self.embedding, self.ans_input)
       self.ques_embs = tf.nn.embedding_lookup(self.embedding, self.ques_input)
 

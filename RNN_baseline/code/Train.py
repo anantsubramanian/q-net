@@ -10,29 +10,27 @@ from QA_Model import QA_Model
 
 def init_parser():
   parser = argparse.ArgumentParser()
-  parser.add_argument('--train_json', dest='train_json')
-  parser.add_argument('--dev_json', dest='dev_json')
-  parser.add_argument('--train_pickle', dest='train_pickle')
-  parser.add_argument('--dev_pickle', dest='dev_pickle')
-  parser.add_argument('--test_pickle', dest='test_pickle')
+  parser.add_argument('--train_json')
+  parser.add_argument('--dev_json')
+  parser.add_argument('--train_pickle')
+  parser.add_argument('--dev_pickle')
+  parser.add_argument('--test_pickle')
   parser.add_argument('--dump_pickles', action='store_true')
-  parser.add_argument('--num_incorrect_samples', type=int, dest='num_incorrect_samples',
-                      default=5)
-  parser.add_argument('--max_train_articles', type=int, dest='max_train_articles',
-                      default=-1)
-  parser.add_argument('--max_dev_articles', type=int, dest='max_dev_articles',
-                      default=-1)
-  parser.add_argument('--embed_size', type=int, default=256)
-  parser.add_argument('--hidden_size', type=int, default=300)
+  parser.add_argument('--num_incorrect_samples', type=int, default=5)
+  parser.add_argument('--max_train_articles', type=int, default=-1)
+  parser.add_argument('--max_dev_articles', type=int, default=-1)
+  parser.add_argument('--embed_size', type=int, default=300)
+  parser.add_argument('--hidden_size', type=int, default=200)
   parser.add_argument('--num_layers', type=int, default=1)
-  parser.add_argument('--learning_rate', type=float, default=0.1)
+  parser.add_argument('--learning_rate', type=float, default=0.01)
   parser.add_argument('--ckpt', type=int, default=0)
   parser.add_argument('--epochs', type=int, default=10)
   parser.add_argument('--model_dir', default='./')
-  parser.add_argument('--batch_size', type=int, default=32)
-  parser.add_argument('--test_batch_size', type=int, default=512)
+  parser.add_argument('--batch_size', type=int, default=64)
+  parser.add_argument('--test_batch_size', type=int, default=1024)
   parser.add_argument('--dropout_keep_value', type=float, default=1.0)
-  parser.add_argument('--optimizer', default='Adam')
+  parser.add_argument('--optimizer', default='Momentum')
+  parser.add_argument('--word2vec_path')
   return parser
 
 args = init_parser().parse_args()
@@ -75,7 +73,9 @@ config = { 'embed_size' : args.embed_size,
            'drop_emb': args.dropout_keep_value,
            'unequal_neg': True,
            'optimizer': args.optimizer,
-           'incorrect_ratio': args.num_incorrect_samples }
+           'incorrect_ratio': args.num_incorrect_samples,
+           'word2vec_path': args.word2vec_path,
+           'index_to_word': train_data.dictionary.index_to_word }
 model = QA_Model(config)
 #------------------------------------------------------------------------------#
 
