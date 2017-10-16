@@ -103,7 +103,8 @@ class QA_Model:
 
     # Linearly project combined embeddings to output space
     with tf.variable_scope("affine"):
-      self.W_sm = tf.Variable(tf.random_uniform([2*hidden_size, output_dim]))
+      self.W_sm = tf.get_variable("affine_W", shape=[2*hidden_size, output_dim])
+      #self.W_sm = tf.Variable(tf.random_uniform([2*hidden_size, output_dim]))
       self.b_sm = tf.Variable(tf.zeros([output_dim]))
       self.logits = tf.matmul(self.comb_embs, self.W_sm) + self.b_sm
 
