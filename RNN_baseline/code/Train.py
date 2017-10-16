@@ -20,17 +20,18 @@ def init_parser():
   parser.add_argument('--max_train_articles', type=int, default=-1)
   parser.add_argument('--max_dev_articles', type=int, default=-1)
   parser.add_argument('--embed_size', type=int, default=300)
-  parser.add_argument('--hidden_size', type=int, default=200)
+  parser.add_argument('--hidden_size', type=int, default=512)
   parser.add_argument('--num_layers', type=int, default=1)
-  parser.add_argument('--learning_rate', type=float, default=0.01)
+  parser.add_argument('--learning_rate', type=float, default=0.02)
   parser.add_argument('--ckpt', type=int, default=0)
   parser.add_argument('--epochs', type=int, default=10)
   parser.add_argument('--model_dir', default='./')
   parser.add_argument('--batch_size', type=int, default=64)
-  parser.add_argument('--test_batch_size', type=int, default=1024)
+  parser.add_argument('--test_batch_size', type=int, default=512)
   parser.add_argument('--dropout_keep_value', type=float, default=1.0)
   parser.add_argument('--optimizer', default='Momentum')
   parser.add_argument('--word2vec_path')
+  parser.add_argument('--debug', action='store_true')
   return parser
 
 args = init_parser().parse_args()
@@ -54,6 +55,9 @@ test_batch_size = args.test_batch_size
 # Sort data by increasing question+answer length, for efficient batching.
 train.sort(cmp=lambda x,y: len(x[0]) + len(x[1]) - (len(y[0]) + len(y[1])))
 dev.sort(cmp=lambda x,y: len(x[0]) + len(x[1]) - (len(y[0]) + len(y[1])))
+if args.debug:
+  train = train[:3200]
+  dev = dev[:3200]
 train_1_examples = sum([ example[2] for example in train ])
 dev_1_examples = sum([ example[2] for example in dev ])
 test_1_examples = sum([ example[2] for example in test ])
@@ -169,6 +173,7 @@ with tf.Session(config=tf_config) as sess:
           print "[Average loss : %.5f]" % (dev_loss_sum/(i+1)),
 
           # Compute overall prediction-error, error for 0s, and error for 1s
+          print predictions
           dev_errors = np.abs(predictions-labels)
           dev_error_sum += np.sum(dev_errors)
           dev_error0_sum += np.sum((1-np.array(labels)) * dev_errors)
