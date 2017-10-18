@@ -19,13 +19,15 @@ class QA_Model:
     output_dim = 1
     incorrect_ratio = float(config['incorrect_ratio'])
 
+    self.passage_input = tf.placeholder(tf.int32, [None, None], name="passage_input")
+    self.passage_lens = tf.placeholder(tf.int32, [None], name='passage_lens')
     self.ans_input = tf.placeholder(tf.int32, [None, None], name="ans_input")
     self.ans_lens = tf.placeholder(tf.int32, [None], name='ans_lens')
     self.ques_input = tf.placeholder(tf.int32, [None, None], name="ques_input")
     self.ques_lens = tf.placeholder(tf.int32, [None], name='ques_lens')
 
     # Use commented with sparse cross entropy loss.
-    #self.labels = tf.placeholder(tf.int32, [None], name='labels')
+    #    self.labels = tf.placeholder(tf.int32, [None], name='labels')
     self.labels = tf.placeholder(tf.float32, [None], name='labels')
     self.keep_prob = tf.placeholder(tf.float32)
 
@@ -59,13 +61,31 @@ class QA_Model:
 
       self.ans_embs = tf.nn.embedding_lookup(self.embedding, self.ans_input)
       self.ques_embs = tf.nn.embedding_lookup(self.embedding, self.ques_input)
+      self.passage_embs = tf.nn.embedding_lookup(self.embedding, self.passage_input)
+
+    # Get passage encoded representation
+    with tf.variable_scope("passage_rnn"):
+      self.passage_cell = tf.contrib.rnn.LSTMCell(hidden_size)
+      # Uncomment to use dropout
+      self.passage_cell = tf.contrib.rnn.DropoutWrapper(self.passage_cell,
+                                                    output_keep_prob=self.keep_prob)
+      self.passage_cell = tf.contrib.rnn.MultiRNNCell([self.passage_cell] * num_layers)
+      self.passage_rnn_outputs, _ = tf.nn.dynamic_rnn(self.passage_cell, self.passage_embs,
+                                                      sequence_length=self.passage_lens,
+                                                      dtype=tf.float32)
+      passage_outputs = tf.squeeze(self.passage_rnn_outputs[:, -1, :])
+      # Uncomment below to non-linearly project encoded answer representation
+      #ans_outputs = tf.contrib.layers.fully_connected(
+      #  activation_fn=tf.nn.relu, inputs=ans_outputs, num_outputs=embed_size,
+      #  scope="fully_connect_ans",
+      #  biases_initializer=tf.contrib.layers.xavier_initializer())
 
     # Get answer encoded representation
     with tf.variable_scope("answer_rnn"):
       self.ans_cell = tf.contrib.rnn.LSTMCell(hidden_size)
       # Uncomment to use dropout
-      #self.ans_cell = tf.contrib.rnn.DropoutWrapper(self.ans_cell,
-      #                                              output_keep_prob=self.keep_prob)
+      self.ans_cell = tf.contrib.rnn.DropoutWrapper(self.ans_cell,
+                                                    output_keep_prob=self.keep_prob)
       self.ans_cell = tf.contrib.rnn.MultiRNNCell([self.ans_cell] * num_layers)
       self.ans_rnn_outputs, _ = tf.nn.dynamic_rnn(self.ans_cell, self.ans_embs,
                                                   sequence_length=self.ans_lens,
@@ -79,8 +99,8 @@ class QA_Model:
 
     with tf.variable_scope("question_rnn"):
       self.ques_cell = tf.contrib.rnn.LSTMCell(hidden_size)
-      #self.ques_cell = tf.contrib.rnn.DropoutWrapper(self.ques_cell,
-      #                                               output_keep_prob=self.keep_prob)
+      self.ques_cell = tf.contrib.rnn.DropoutWrapper(self.ques_cell,
+                                                     output_keep_prob=self.keep_prob)
       self.ques_cell = tf.contrib.rnn.MultiRNNCell([self.ques_cell] * num_layers)
       self.ques_rnn_outputs, _ = tf.nn.dynamic_rnn(self.ques_cell, self.ques_embs,
                                                    sequence_length=self.ques_lens,
@@ -93,38 +113,45 @@ class QA_Model:
       #  biases_initializer = tf.contrib.layers.xavier_initializer())
 
     # Combine question and answer embeddings by concatenation
-    self.comb_embs = tf.concat([ans_outputs, ques_outputs], 1)
+    self.comb_embs = tf.reshape(
+        tf.concat([passage_outputs, ans_outputs, ques_outputs], 1), [-1, 3*hidden_size])
 
     # Uncomment below to non-linearly project combined ans+ques embeddings
-    #self.comb_embs = tf.contrib.layers.fully_connected(
-    #  activation_fn = tf.nn.relu, inputs=self.comb_embs, num_outputs=hidden_size,
-    #  scope="fully_connect_combined",
-    #  biases_initializer=tf.contrib.layers.xavier_initializer())
+    self.comb_embs = tf.contrib.layers.fully_connected(
+      activation_fn=tf.nn.tanh, inputs=self.comb_embs, num_outputs=3*hidden_size,
+      scope="fully_connect_combined")
 
     # Linearly project combined embeddings to output space
     with tf.variable_scope("affine"):
-      self.W_sm = tf.get_variable("affine_W", shape=[2*hidden_size, output_dim])
+      self.W_sm = tf.get_variable("affine_W", shape=[3*hidden_size, output_dim])
       #self.W_sm = tf.Variable(tf.random_uniform([2*hidden_size, output_dim]))
       self.b_sm = tf.Variable(tf.zeros([output_dim]))
       self.logits = tf.matmul(self.comb_embs, self.W_sm) + self.b_sm
 
     # Get the 0-1 prediction value
     # Uncomment below  instead for output_dim of 2
-    #self.predictions = tf.argmax(self.logits, axis=1)
-    self.predictions = tf.round(tf.nn.sigmoid(tf.squeeze(self.logits)))
+    #    self.predictions = tf.argmax(self.logits, axis=1)
+    self.predictions = tf.nn.sigmoid(tf.squeeze(self.logits))
 
     # Compute loss. More weight is given to the positive label examples if the
     # 'unequal_neg' flag is set.
     with tf.variable_scope("loss"):
       # Uncomment below to use sparse softmax cross entropy with output_dim as 2
-      #self.losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits,
+      #self.losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits, labels=self.labels)
+      # Uncomment below for hinge loss
+      #self.losses =\
+      #        tf.losses.hinge_loss(tf.expand_dims(self.labels,-1),self.logits, weights= 1.0 + tf.expand_dims(self.labels, -1) *(incorrect_ratio-1))
       self.losses =\
-        tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits,
+              tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits,
                                                 labels=tf.expand_dims(self.labels,-1))
       if unequal_neg:
         # incorrect_ratio extra weight is given to positive samples.
-        self.losses = tf.add(self.losses, tf.multiply(self.losses, incorrect_ratio *\
-                                                      tf.to_float(self.labels)))
+        self.losses = \
+          tf.losses.compute_weighted_loss(self.losses,
+                                          1.0 + tf.expand_dims(self.labels,-1) *\
+                                          (incorrect_ratio-1))
+        #self.losses = tf.add(self.losses, tf.multiply(self.losses, incorrect_ratio *\
+        #                                              tf.to_float(self.labels)))
       self.loss = tf.reduce_mean(self.losses)
 
     # Decide between Adam, Momentum and SGD optimizers
