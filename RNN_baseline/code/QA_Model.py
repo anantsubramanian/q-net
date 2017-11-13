@@ -5,6 +5,19 @@ import sys
 import tensorflow as tf
 
 class QA_Model:
+  def extract_axis_1(self,data, ind):
+    """
+    Get specified elements along the first axis of tensor.
+    :param data: Tensorflow tensor that will be subsetted.
+    :param ind: Indices to take (one for each element along axis 0 of data).
+    :return: Subsetted tensor.
+    """
+
+    batch_range = tf.range(tf.shape(data)[0])
+    indices = tf.stack([batch_range, ind], axis=1)
+    res = tf.gather_nd(data, indices)
+
+    return res
   def __init__(self, config):
     # Load configuration options
     embed_size = config['embed_size']
@@ -73,7 +86,9 @@ class QA_Model:
       self.passage_rnn_outputs, _ = tf.nn.dynamic_rnn(self.passage_cell, self.passage_embs,
                                                       sequence_length=self.passage_lens,
                                                       dtype=tf.float32)
-      passage_outputs = tf.squeeze(self.passage_rnn_outputs[:, -1, :])
+      
+      #passage_outputs = tf.squeeze(self.passage_rnn_outputs[:, -1, :])
+      passage_outputs = self.extract_axis_1(self.passage_rnn_outputs,self.passage_lens-1)
       # Uncomment below to non-linearly project encoded answer representation
       #ans_outputs = tf.contrib.layers.fully_connected(
       #  activation_fn=tf.nn.relu, inputs=ans_outputs, num_outputs=embed_size,
@@ -90,7 +105,8 @@ class QA_Model:
       self.ans_rnn_outputs, _ = tf.nn.dynamic_rnn(self.ans_cell, self.ans_embs,
                                                   sequence_length=self.ans_lens,
                                                   dtype=tf.float32)
-      ans_outputs = tf.squeeze(self.ans_rnn_outputs[:, -1, :])
+      #ans_outputs = tf.squeeze(self.ans_rnn_outputs[:, -1, :])
+      ans_outputs = self.extract_axis_1(self.ans_rnn_outputs,self.ans_lens-1)
       # Uncomment below to non-linearly project encoded answer representation
       #ans_outputs = tf.contrib.layers.fully_connected(
       #  activation_fn=tf.nn.relu, inputs=ans_outputs, num_outputs=embed_size,
@@ -105,7 +121,8 @@ class QA_Model:
       self.ques_rnn_outputs, _ = tf.nn.dynamic_rnn(self.ques_cell, self.ques_embs,
                                                    sequence_length=self.ques_lens,
                                                    dtype=tf.float32)
-      ques_outputs = tf.squeeze(self.ques_rnn_outputs[:, -1, :])
+      #ques_outputs = tf.squeeze(self.ques_rnn_outputs[:, -1, :])
+      ques_outputs = self.extract_axis_1(self.ques_rnn_outputs,self.ques_lens-1)
       # Uncomment below to non-linearly project encoded question representation
       #outputs = tf.contrib.layers.fully_connected(
       #  activation_fn=tf.nn.relu, inputs=outputs, num_outputs=embed_size,
