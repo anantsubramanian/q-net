@@ -33,7 +33,7 @@ def init_parser():
   parser.add_argument('--hidden_size', type=int, default=150)
   parser.add_argument('--learning_rate', type=float, default=0.01)
   parser.add_argument('--ckpt', type=int, default=0)
-  parser.add_argument('--epochs', type=int, default=10)
+  parser.add_argument('--epochs', type=int, default=25)
   parser.add_argument('--model_dir', default='./')
   parser.add_argument('--batch_size', type=int, default=32)
   parser.add_argument('--test_batch_size', type=int, default=32)
@@ -243,12 +243,12 @@ def train_model(args):
       for idx in range(len(dev_batch)):
         best_prob = -1
         best = []
-        for i, start_prob in enumerate(distributions[0][idx]):
-          end_idx = np.argmax(distributions[1][idx][i:])
+        for j, start_prob in enumerate(distributions[0][idx]):
+          end_idx = np.argmax(distributions[1][idx][j:])
           prob = distributions[0][idx][end_idx] * start_prob
           if prob > best_prob:
             best_prob = prob
-            best = [i, end_idx]
+            best = [j, end_idx]
         best_idxs.append(best)
 
       tokenized_paras = dev_data.tokenized_paras
@@ -341,12 +341,12 @@ def test_model(args):
     for idx in range(len(test_batch)):
       best_prob = -1
       best = []
-      for i, start_prob in enumerate(distributions[0][idx]):
-        end_idx = np.argmax(distributions[1][idx][i:])
+      for j, start_prob in enumerate(distributions[0][idx]):
+        end_idx = np.argmax(distributions[1][idx][j:])
         prob = distributions[0][idx][end_idx] * start_prob
         if prob > best_prob:
           best_prob = prob
-          best = [i, end_idx]
+          best = [j, end_idx]
       best_idxs.append(best)
 
     tokenized_paras = test_data.tokenized_paras

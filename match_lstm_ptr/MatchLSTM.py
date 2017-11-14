@@ -71,6 +71,8 @@ class MatchLSTM(nn.Module):
 
   def load(self, path, epoch):
     self = torch.load(path + "/epoch_" + str(epoch) + ".pt")
+    self.passage_lstm.flatten_parameters()
+    self.question_lstm.flatten_parameters()
     return self
 
   # Calls torch nn utils rnn pack_padded_sequence.
@@ -228,7 +230,7 @@ class MatchLSTM(nn.Module):
 
       # Store distribution over passage words for answer start/end.
       answer_scores.append(torch.squeeze(beta_k_scores))
-      answer_distributions.append(torch.squeeze(beta_k))
+      answer_distributions.append(torch.t(torch.squeeze(beta_k)))
 
       # weighted_Hr.shape = (batch, 2*hdim)
       weighted_Hr = torch.squeeze(torch.bmm(beta_k.permute(1, 2, 0),

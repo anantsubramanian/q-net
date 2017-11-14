@@ -137,7 +137,8 @@ class Data:
         answer_idxs[1] -= 2
 
         # Valid answers should lie within bounds.
-        if answer_idxs[0] >= len(tokenized_para) or answer_idxs[1] >= len(tokenized_para):
+        if answer_idxs[0] < 0 or answer_idxs[0] >= len(tokenized_para) \
+           or answer_idxs[1] < 0 or answer_idxs[1] >= len(tokenized_para):
           print "\n" * 3
           print "Invalid answer \"%s\" ignored.\n" % answer['text']
           print "Question: %s\n" % qa['question']
