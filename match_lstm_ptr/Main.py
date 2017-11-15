@@ -10,7 +10,7 @@ import torch.nn as nn
 
 from operator import itemgetter
 from torch.autograd import Variable
-from torch.optim import SGD
+from torch.optim import SGD, Adamax
 from Input import Dictionary, Data, pad, read_data
 from MatchLSTM import MatchLSTM
 
@@ -39,7 +39,7 @@ def init_parser():
   parser.add_argument('--model_dir', default='./')
   parser.add_argument('--batch_size', type=int, default=32)
   parser.add_argument('--test_batch_size', type=int, default=32)
-  parser.add_argument('--optimizer', default='SGD')
+  parser.add_argument('--optimizer', default='Adamax') # 'SGD' or 'Adamax'
   parser.add_argument('--debug', action='store_true')
   parser.add_argument('--cuda', action='store_true')
   parser.add_argument('--max_answer_span', type=int, default=15)
@@ -155,7 +155,19 @@ def train_model(args):
   start_time = time.time()
   print "Starting training."
 
-  optimizer = SGD(model.parameters(), lr = args.learning_rate)
+  if args.optimizer == "SGD":
+    print "Using SGD optimizer."
+    optimizer = SGD(model.parameters(), lr = args.learning_rate)
+  elif args.optimizer == "Adamax":
+    print "Using Adamax optimizer."
+    optimizer = Adamax(model.parameters())
+    if last_done_epoch > 0:
+      if os.path.exists(args.model_dir + "/optim_%d.pt" % last_done_epoch):
+        optimizer = torch.load(args.model_dir + "/optim_%d.pt" % last_done_epoch)
+      else:
+        print "Optimizer saved state not found. Not loading optimizer."
+  else:
+    assert False, "Unrecognized optimizer."
   print(model)
 
   for EPOCH in range(last_done_epoch+1, args.epochs):
@@ -197,13 +209,17 @@ def train_model(args):
       train_loss_sum += model.loss.data[0]
 
       print "Loss: %.5f (in time %.2fs)" % \
-            (train_loss_sum/(i+1), time.time() - start_t)
+            (train_loss_sum/(i+1), time.time() - start_t),
       sys.stdout.flush()
 
+    print "\nLoss: %.5f (in time %.2fs)" % \
+          (train_loss_sum/len(train_order), time.time() - start_t)
 
     # End of epoch.
     model.zero_grad()
     model.save(args.model_dir, EPOCH)
+    if args.optimizer == "Adamax":
+      torch.save(optimizer, args.model_dir + "/optim_%d.pt" % EPOCH)
 
     # Run pass over dev data.
     dev_start_t = time.time()
