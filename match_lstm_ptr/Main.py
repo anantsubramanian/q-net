@@ -32,6 +32,8 @@ def init_parser():
   parser.add_argument('--embed_size', type=int, default=300)
   parser.add_argument('--hidden_size', type=int, default=150)
   parser.add_argument('--learning_rate', type=float, default=0.01)
+  parser.add_argument('--glove_path', default='../../data/glove/glove.42B.300d.txt')
+  parser.add_argument('--disable_glove', action='store_true')
   parser.add_argument('--ckpt', type=int, default=0)
   parser.add_argument('--epochs', type=int, default=25)
   parser.add_argument('--model_dir', default='./')
@@ -40,6 +42,7 @@ def init_parser():
   parser.add_argument('--optimizer', default='SGD')
   parser.add_argument('--debug', action='store_true')
   parser.add_argument('--cuda', action='store_true')
+  parser.add_argument('--max_answer_span', type=int, default=15)
   return parser
 
 
@@ -73,16 +76,13 @@ def read_and_process_data(args):
   print "Sorting datasets in decreasing order of (para + question) lengths."
   train.sort(cmp=lambda x,y:\
       len(x[0]) + len(train_tokenized_paras[train_ques_to_para[x[2]]]) -\
-      (len(y[0]) + len(train_tokenized_paras[train_ques_to_para[y[2]]])),
-      reverse = True)
+      (len(y[0]) + len(train_tokenized_paras[train_ques_to_para[y[2]]])))
   dev.sort(cmp=lambda x,y:\
       len(x[0]) + len(dev_tokenized_paras[dev_ques_to_para[x[2]]]) -\
-      (len(y[0]) + len(dev_tokenized_paras[dev_ques_to_para[y[2]]])),
-      reverse = True)
+      (len(y[0]) + len(dev_tokenized_paras[dev_ques_to_para[y[2]]])))
   test.sort(cmp=lambda x,y:\
       len(x[0]) + len(test_tokenized_paras[test_ques_to_para[x[2]]]) -\
-      (len(y[0]) + len(test_tokenized_paras[test_ques_to_para[y[2]]])),
-      reverse = True)
+      (len(y[0]) + len(test_tokenized_paras[test_ques_to_para[y[2]]])))
   print "Done."
 
   # Debug flag reduces size of input data, for testing purposes.
@@ -109,12 +109,21 @@ def build_model(args, vocab_size, index_to_word, word_to_index):
              'vocab_size' : vocab_size,
              'hidden_size' : args.hidden_size,
              'lr' : args.learning_rate,
+             'glove_path' : args.glove_path,
+             'use_glove' : not args.disable_glove,
              'ckpt': args.ckpt,
              'optimizer': args.optimizer,
              'index_to_word': index_to_word,
              'word_to_index': word_to_index,
              'cuda': args.cuda }
+  print "Building model."
   model = MatchLSTM(config)
+  print "Done!"
+  sys.stdout.flush()
+
+  print "%d OOV words." % model.oov_count
+  print "OOV Words:",
+  print model.oov_list[:10]
 
   if args.cuda:
     model = model.cuda()
@@ -134,9 +143,6 @@ def train_model(args):
                               train_data.dictionary.index_to_word,
                               train_data.dictionary.word_to_index)
 
-  optimizer = SGD(model.parameters(), lr = args.learning_rate)
-  print(model)
-
   if not os.path.exists(args.model_dir):
     os.mkdir(args.model_dir)
 
@@ -149,8 +155,12 @@ def train_model(args):
   start_time = time.time()
   print "Starting training."
 
+  optimizer = SGD(model.parameters(), lr = args.learning_rate)
+  print(model)
+
   for EPOCH in range(last_done_epoch+1, args.epochs):
     start_t = time.time()
+    random.shuffle(train_order)
     train_loss_sum = 0.0
     for i, num in enumerate(train_order):
       print "\rTrain epoch %d, %.2f s - (Done %d of %d)" %\
@@ -186,13 +196,13 @@ def train_model(args):
       optimizer.step()
       train_loss_sum += model.loss.data[0]
 
-      print "Loss:", train_loss_sum/(i+1),
+      print "Loss: %.5f (in time %.2fs)" % \
+            (train_loss_sum/(i+1), time.time() - start_t)
       sys.stdout.flush()
 
 
     # End of epoch.
     model.zero_grad()
-    random.shuffle(train_order)
     model.save(args.model_dir, EPOCH)
 
     # Run pass over dev data.
@@ -243,12 +253,14 @@ def train_model(args):
       for idx in range(len(dev_batch)):
         best_prob = -1
         best = []
-        for j, start_prob in enumerate(distributions[0][idx]):
-          end_idx = np.argmax(distributions[1][idx][j:])
-          prob = distributions[0][idx][end_idx] * start_prob
+        max_end = paras_lens_in[idx]
+        for j, start_prob in enumerate(distributions[0][idx][:max_end]):
+          cur_end_idx = min(j + args.max_answer_span, max_end)
+          end_idx = np.argmax(distributions[1][idx][j:cur_end_idx])
+          prob = distributions[1][idx][j+end_idx] * start_prob
           if prob > best_prob:
             best_prob = prob
-            best = [j, end_idx]
+            best = [j, j+end_idx]
         best_idxs.append(best)
 
       tokenized_paras = dev_data.tokenized_paras
@@ -341,12 +353,14 @@ def test_model(args):
     for idx in range(len(test_batch)):
       best_prob = -1
       best = []
-      for j, start_prob in enumerate(distributions[0][idx]):
-        end_idx = np.argmax(distributions[1][idx][j:])
-        prob = distributions[0][idx][end_idx] * start_prob
+      max_end = paras_lens_in[idx]
+      for j, start_prob in enumerate(distributions[0][idx][:max_end]):
+        cur_end_idx = min(j + args.max_answer_span, max_end)
+        end_idx = np.argmax(distributions[1][idx][j:cur_end_idx])
+        prob = distributions[1][idx][j+end_idx] * start_prob
         if prob > best_prob:
           best_prob = prob
-          best = [j, end_idx]
+          best = [j, j+end_idx]
       best_idxs.append(best)
 
     tokenized_paras = test_data.tokenized_paras

@@ -18,8 +18,23 @@ class MatchLSTM(nn.Module):
     self.load_from_config(config)
 
     # Embedding look-up.
-    self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
-                                  self.word_to_index['<pad>'])
+    self.oov_count = 0
+    self.oov_list = []
+    if self.use_glove:
+      embeddings = np.zeros((self.vocab_size, self.embed_size))
+      with open(self.glove_path) as f:
+        for line in f:
+          line = line.split()
+          if line[0] in self.word_to_index:
+            embeddings[self.word_to_index[line[0]]] = np.array(map(float,line[1:]))
+      for i, embedding in enumerate(embeddings):
+        if sum(embedding) == 0:
+          self.oov_count += 1
+          self.oov_list.append(self.index_to_word[i])
+      self.embedding = embeddings
+    else:
+      self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
+                                    self.word_to_index['<pad>'])
     
     # Passage and Question LSTMs (matrices Hp and Hq respectively).
     self.passage_lstm = nn.LSTM(input_size = self.embed_size,
@@ -61,9 +76,11 @@ class MatchLSTM(nn.Module):
     self.vocab_size = config['vocab_size']
     self.hidden_size = config['hidden_size']
     self.lr_rate = config['lr']
+    self.glove_path = config['glove_path']
     self.optimizer = config['optimizer']
     self.index_to_word = config['index_to_word']
     self.word_to_index = config['word_to_index']
+    self.use_glove = config['use_glove']
     self.use_cuda = config['cuda']
 
   def save(self, path, epoch):
@@ -107,27 +124,41 @@ class MatchLSTM(nn.Module):
             self.variable(torch.zeros(batch_size, self.hidden_size)))
 
 
+  # inp.shape = (seq_len, batch)
+  # output.shape = (seq_len, batch, embed_size)
+  def get_glove_embeddings(self, inp):
+    output = np.zeros((inp.shape[0], inp.shape[1], self.embed_size))
+    for i, batch in enumerate(inp):
+      for j, word_id in enumerate(batch):
+        output[i][j] = self.embedding[word_id]
+    return self.placeholder(output)
+
   # Forward pass method.
   # passage = tuple((seq_len, batch), len_within_batch)
   # question = tuple((seq_len, batch), len_within_batch)
   # answer = tuple((2, batch))
   def forward(self, passage, question, answer):
-    padded_passage = self.placeholder(passage[0], False)
-    padded_question = self.placeholder(question[0], False)
-    batch_size = padded_passage.size()[1]
-    max_passage_len = padded_passage.size()[0]
-    max_question_len = padded_question.size()[0]
+    if not self.use_glove:
+      padded_passage = self.placeholder(passage[0], False)
+      padded_question = self.placeholder(question[0], False)
+    batch_size = passage[0].shape[1]
+    max_passage_len = passage[0].shape[0]
+    max_question_len = question[0].shape[0]
     passage_lens = passage[1]
     question_lens = question[1]
 
     # Get embedded passage and question representations.
-    p = torch.transpose(self.embedding(torch.t(padded_passage)), 0, 1)
-    q = torch.transpose(self.embedding(torch.t(padded_question)), 0, 1)
+    if not self.use_glove:
+      p = torch.transpose(self.embedding(torch.t(padded_passage)), 0, 1)
+      q = torch.transpose(self.embedding(torch.t(padded_question)), 0, 1)
+    else:
+      p = self.get_glove_embeddings(passage[0])
+      q = self.get_glove_embeddings(question[0])
 
     # Preprocessing LSTM outputs.
     # H{p,q}.shape = (seq_len, batch, hdim)
     Hp, _ = self.passage_lstm(p, self.get_initial_lstm(batch_size, False))
-    Hq, _ = self.passage_lstm(q, self.get_initial_lstm(batch_size, False))
+    Hq, _ = self.question_lstm(q, self.get_initial_lstm(batch_size, False))
 
     # Mask out padding hidden states for passage LSTM output.
     mask_ps = []
