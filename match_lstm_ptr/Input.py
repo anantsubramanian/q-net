@@ -16,7 +16,7 @@ class Dictionary:
     self.remove_punctuation = remove_punctuation
     self.answer_start = answer_start
     self.answer_end = answer_end
-    self.pad_index = self.add_or_get_index('<PAD>')
+    self.pad_index = self.add_or_get_index('<pad>')
 
   def size(self):
     return len(self.index_to_word)
@@ -109,7 +109,8 @@ class Data:
 
   def word_tokenize_para(self, para_text):
     # Create tokenized paragraph representation.
-    tokenized_para = word_tokenize(para_text)
+    tokenized_para = [ self.dictionary.add_or_get_index(word) \
+                         for word in word_tokenize(para_text) ]
     return tokenized_para
 
   def add_paragraph(self, paragraph):
@@ -143,7 +144,7 @@ class Data:
                              self.dictionary.answer_end + " " + \
                              para_text[end_idx:]
         answer_idxs = [ i for i,idx in \
-                          enumerate(self.tokenize_para(para_text_modified)) \
+                          enumerate(self.word_tokenize_para(para_text_modified)) \
                           if idx == -1 ]
         answer_idxs[1] -= 2
 

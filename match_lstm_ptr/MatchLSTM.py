@@ -34,18 +34,14 @@ class MatchLSTM(nn.Module):
       self.embedding = embeddings
     else:
       self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
-                                    self.word_to_index['<PAD>'])
+                                    self.word_to_index['<pad>'])
 
     self.dropoutp = nn.Dropout(self.dropout)
     self.dropoutq = nn.Dropout(self.dropout)
     
     # Passage and Question LSTMs (matrices Hp and Hq respectively).
-    self.passage_lstm = nn.LSTM(input_size = self.embed_size,
-                                hidden_size = self.hidden_size,
-                                num_layers = 1)
-    self.question_lstm = nn.LSTM(input_size = self.embed_size,
-                                 hidden_size = self.hidden_size,
-                                 num_layers = 1)
+    self.preprocessing_lstm = nn.LSTMCell(input_size = self.embed_size,
+                                          hidden_size = self.hidden_size)
 
     # Attention transformations (variable names below given against those in
     # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
@@ -56,10 +52,8 @@ class MatchLSTM(nn.Module):
     self.alpha_transform = nn.Linear(self.hidden_size, 1)
 
     # Final Match-LSTM cells (bi-directional).
-    self.match_lstm_forward = nn.LSTMCell(input_size = 2 * self.hidden_size,
-                                          hidden_size = self.hidden_size)
-    self.match_lstm_backward = nn.LSTMCell(input_size = 2 * self.hidden_size,
-                                           hidden_size = self.hidden_size)
+    self.match_lstm = nn.LSTMCell(input_size = 2 * self.hidden_size,
+                                  hidden_size = self.hidden_size)
 
     # Answer pointer attention transformations.
     self.attend_match_lstm = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
@@ -159,24 +153,38 @@ class MatchLSTM(nn.Module):
 
     p = self.dropoutp(p)
     q = self.dropoutq(q)
+
     # Preprocessing LSTM outputs.
-    # H{p,q}.shape = (seq_len, batch, hdim)
-    Hp, _ = self.passage_lstm(p, self.get_initial_lstm(batch_size, False))
-    Hq, _ = self.question_lstm(q, self.get_initial_lstm(batch_size, False))
+    Hp = []
+    Hq = []
 
-    # Mask out padding hidden states for passage LSTM output.
-    mask_ps = []
+    # Pre-processing passage.
+    hp, cp = self.get_initial_lstm(batch_size)
     for t in range(max_passage_len):
-      mask_ps.append(np.array([ [1.0] if t < passage_lens[i] else [0.0] \
-                                  for i in range(batch_size) ]))
-    Hp = Hp * self.placeholder(np.array(mask_ps))
+      hp, cp = self.preprocessing_lstm(p[t], (hp, cp))
+      # Don't use LSTM output gating.
+      hp = f.tanh(cp)
+      mask = self.placeholder(np.array([ [1.0] if t < passage_lens[i] else [0.0] \
+                                           for i in range(batch_size) ]))
+      hp = hp * mask
+      cp = cp * mask
+      Hp.append(hp)
 
-    # Mask out padding hidden states for question LSTM output.
-    mask_qs = []
+    # Pre-processing question.
+    hq, cq = self.get_initial_lstm(batch_size)
     for t in range(max_question_len):
-      mask_qs.append(np.array([ [1.0] if t < question_lens[i] else [0.0] \
-                                  for i in range(batch_size) ]))
-    Hq = Hq * self.placeholder(np.array(mask_qs))
+      hq, cq = self.preprocessing_lstm(q[t], (hq, cq))
+      # Don't use LSTM output gating.
+      hq = f.tanh(cq)
+      mask = self.placeholder(np.array([ [1.0] if t < question_lens[i] else [0.0] \
+                                           for i in range(batch_size) ]))
+      hq = hq * mask
+      cq = cq * mask
+      Hq.append(hq)
+
+    # H{p,q}.shape = (seq_len, batch, hdim)
+    Hp = torch.stack(Hp, dim=0)
+    Hq = torch.stack(Hq, dim=0)
 
     # Bi-directional match-LSTM layer.
     # Initial hidden and cell states for forward and backward LSTMs.
@@ -227,8 +235,8 @@ class MatchLSTM(nn.Module):
         zb = zb * mask_b
         
         # Take forward and backward LSTM steps, with zf and zb as inputs.
-        hf, cf = self.match_lstm_forward(zf, (hf, cf))
-        hb, cb = self.match_lstm_backward(zb, (hb, cb))
+        hf, cf = self.match_lstm(zf, (hf, cf))
+        hb, cb = self.match_lstm(zb, (hb, cb))
 
         # Back to initial zero states for padded regions.
         hf = hf * mask_f
