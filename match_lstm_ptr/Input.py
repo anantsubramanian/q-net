@@ -7,12 +7,13 @@ import sys
 from nltk.tokenize import sent_tokenize, word_tokenize
 
 class Dictionary:
-  def __init__(self, lowercase=True, answer_start="ANSWERSTART",
-               answer_end="ANSWEREND"):
+  def __init__(self, lowercase=True, remove_punctuation=True,
+               answer_start="ANSWERSTART", answer_end="ANSWEREND"):
     self.index_to_word = []
     self.word_to_index = {}
     self.mutable = True
     self.lowercase = lowercase
+    self.remove_punctuation = remove_punctuation
     self.answer_start = answer_start
     self.answer_end = answer_end
     self.pad_index = self.add_or_get_index('<PAD>')
@@ -24,8 +25,9 @@ class Dictionary:
     if word == self.answer_start or word == self.answer_end:
       return -1
     # We ignore punctuation symbols
-    if word in string.punctuation:
-      return None
+    if self.remove_punctuation:
+      if word in string.punctuation:
+        return None
     if self.lowercase:
       word = word.strip().lower()
     if word in self.word_to_index:
@@ -40,8 +42,9 @@ class Dictionary:
   def get_index(self, word):
     if word == self.answer_start or word == self.answer_end:
       return -1
-    if word in string.punctuation:
-      return None
+    if self.remove_punctuation:
+      if word in string.punctuation:
+        return None
     if word in self.word_to_index:
       return self.word_to_index[word]
     return self.pad_index
@@ -54,16 +57,19 @@ class Dictionary:
 
 
 class Data:
-  def __init__(self, dictionary=None):
-    self.dictionary = Dictionary()
+  def __init__(self, dictionary=None, immutable=False):
+    self.dictionary = Dictionary(lowercase=False,
+                                 remove_punctuation=False)
     if dictionary:
       self.dictionary = dictionary
+    if immutable:
       self.dictionary.set_immutable()
     self.questions = {}
     self.paragraphs = []
     self.tokenized_paras = []
     self.question_to_paragraph = {}
     self.data = []
+    self.missed = 0
 
   def clear_aux_data(self):
     del self.questions
@@ -101,12 +107,17 @@ class Data:
 
     return joined_para
 
+  def word_tokenize_para(self, para_text):
+    # Create tokenized paragraph representation.
+    tokenized_para = word_tokenize(para_text)
+    return tokenized_para
+
   def add_paragraph(self, paragraph):
     para_text = paragraph['context']
     para_qas = paragraph['qas']
 
     # Store tokenized paragraph.
-    tokenized_para = self.tokenize_para(para_text)
+    tokenized_para = self.word_tokenize_para(para_text)
     self.tokenized_paras.append(tokenized_para)
 
     for qa in para_qas:
@@ -140,10 +151,12 @@ class Data:
         if answer_idxs[0] < 0 or answer_idxs[0] >= len(tokenized_para) \
            or answer_idxs[1] < 0 or answer_idxs[1] >= len(tokenized_para):
           print "\n" * 3
-          print "Invalid answer \"%s\" ignored.\n" % answer['text']
+          print "Invalid answer \"%s\" ignored. (%d,%d)\n" % \
+                (answer['text'], answer_idxs[0], answer_idxs[1])
           print "Question: %s\n" % qa['question']
           print "Paragraph: %s" % para_text
           print "\n" * 3
+          self.missed += 1
           continue
 
         processed_answers.append(answer_idxs)
@@ -156,28 +169,18 @@ class Data:
     self.paragraphs.append(para_text)
 
 
-  def read_from_file(self, filename, max_articles, return_test=False,
-                     test_split=10):
+  def read_from_file(self, filename, max_articles):
     dev_data = {}
-    if return_test:
-      test_data = {}
     with open(filename, 'r') as input_file:
       data = json.load(input_file)
       dev_data['version'] = data['version']
       dev_data['data'] = []
-      if return_test:
-        test_data['version'] = data['version']
-        test_data['data'] = []
-
 
       data = data['data']
       # Read each input article
       for article_index, article in enumerate(data):
         if article_index == max_articles:
           break
-        if return_test and article_index >= test_split:
-          test_data['data'].append(article)
-          continue
         dev_data['data'].append(article)
         # Read each para for each article
         for para_index, paragraph in enumerate(article['paragraphs']):
@@ -187,9 +190,7 @@ class Data:
           sys.stdout.flush()
       print ""
 
-    if return_test:
-      return dev_data, test_data
-    return dev_data, None
+    return dev_data
 
 # Pad a given sequence upto length "length" with the given "element".
 def pad(seq, element, length):
@@ -199,61 +200,42 @@ def pad(seq, element, length):
     return padded_seq
 
 # Read train and dev data, either from json files or from pickles, and dump them in
-# pickles if necessary. Test json and pickle are optionally created by this method too.
-def read_data(train_json, train_pickle, dev_json, dev_pickle, test_json, test_pickle,
-              max_train_articles, max_dev_articles, dump_pickles, dev_output_json,
-              load_test=False):
+# pickles if necessary.
+def read_data(train_json, train_pickle, dev_json, dev_pickle, max_train_articles,
+              max_dev_articles, dump_pickles):
+  reload(sys)
+  sys.setdefaultencoding('utf-8')
   train_data = Data()
   print "Reading training data."
   if train_json:
     train_data.read_from_file(train_json, max_train_articles)
-    if dump_pickles:
-      assert not train_pickle == None
-      train_data.dump_pickle(train_pickle)
   else:
     train_data = train_data.read_from_pickle(train_pickle)
 
-  print "Done."
-  print "Vocab size is:", train_data.dictionary.size()
-  print "Sample words:", train_data.dictionary.index_to_word[:10]
-
   dev_data = Data(train_data.dictionary)
-  test_data = Data(train_data.dictionary)
   if dev_json:
-    assert test_json is not None
-    assert dev_output_json is not None
     print "Reading dev data."
-    dev_json_data, test_json_data = \
-      dev_data.read_from_file(dev_json,max_dev_articles, return_test=True)
-    with open(test_json, "w") as test_out:
-      json.dump(test_json_data, test_out)
-      test_out.close()
-    with open(dev_output_json, "w") as dev_out:
-      json.dump(dev_json_data, dev_out)
-      dev_out.close()
-    print "Done."
-
-    if load_test:
-      print "Reading test data."
-      test_data = Data(train_data.dictionary)
-      test_data.read_from_file(test_json, max_dev_articles)
-      print "Done."
-
-    if dump_pickles:
-      assert not dev_pickle == None and not test_pickle == None
-      print "Dumping pickles."
-      dev_data.dump_pickle(dev_pickle)
-      test_data.dump_pickle(test_pickle)
-      print "Done."
+    dev_json_data = dev_data.read_from_file(dev_json, max_dev_articles)
   else:
     print "Reading dev data."
     dev_data = dev_data.read_from_pickle(dev_pickle)
     print "Done."
-    if load_test:
-      print "Reading test data."
-      test_data = test_data.read_from_pickle(test_pickle)
-      print "Done."
+
+  if dump_pickles:
+    assert not train_pickle == None
+    assert not dev_pickle == None
+    print "Dumping pickles."
+    train_data.dump_pickle(train_pickle)
+    dev_data.dump_pickle(dev_pickle)
+    print "Done."
 
   print "Finished reading all required data."
-  return train_data, dev_data, test_data
+  print "Train missed %d questions, Dev missed %d." % (train_data.missed, dev_data.missed)
+
+  print "Done."
+  print "Train vocab size is:", train_data.dictionary.size()
+  print "Dev vocab size is:", dev_data.dictionary.size()
+  print "Sample words:", train_data.dictionary.index_to_word[:10]
+
+  return train_data, dev_data
 

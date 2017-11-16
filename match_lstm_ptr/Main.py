@@ -19,20 +19,17 @@ def init_parser():
   parser.add_argument('--run_type', default='train')
   parser.add_argument('--train_json')
   parser.add_argument('--dev_json')
-  parser.add_argument('--test_json')
-  parser.add_argument('--dev_output_json')
   parser.add_argument('--train_pickle')
   parser.add_argument('--dev_pickle')
-  parser.add_argument('--test_pickle')
   parser.add_argument('--predictions_output_json')
-  parser.add_argument('--load_test', action='store_true')
   parser.add_argument('--dump_pickles', action='store_true')
   parser.add_argument('--max_train_articles', type=int, default=-1)
   parser.add_argument('--max_dev_articles', type=int, default=-1)
   parser.add_argument('--embed_size', type=int, default=300)
   parser.add_argument('--hidden_size', type=int, default=150)
-  parser.add_argument('--learning_rate', type=float, default=0.01)
-  parser.add_argument('--glove_path', default='../../data/glove/glove.42B.300d.txt')
+  parser.add_argument('--learning_rate', type=float, default=0.002)
+  parser.add_argument('--decay_rate', type=float, default=0.95)
+  parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt')
   parser.add_argument('--disable_glove', action='store_true')
   parser.add_argument('--ckpt', type=int, default=0)
   parser.add_argument('--epochs', type=int, default=25)
@@ -41,6 +38,7 @@ def init_parser():
   parser.add_argument('--test_batch_size', type=int, default=32)
   parser.add_argument('--optimizer', default='Adamax') # 'SGD' or 'Adamax'
   parser.add_argument('--debug', action='store_true')
+  parser.add_argument('--dropout', type=float, default=0.4)
   parser.add_argument('--cuda', action='store_true')
   parser.add_argument('--max_answer_span', type=int, default=15)
   return parser
@@ -52,24 +50,25 @@ def read_and_process_data(args):
   assert not (args.dev_json == None and args.dev_pickle == None)
 
   #----------------------- Read train, dev and test data ------------------------#
-  train_data, dev_data, test_data = \
+  train_data, dev_data = \
     read_data(args.train_json, args.train_pickle, args.dev_json, args.dev_pickle,
-              args.test_json, args.test_pickle, args.max_train_articles,
-              args.max_dev_articles, args.dump_pickles, args.dev_output_json,
-              args.load_test)
+              args.max_train_articles, args.max_dev_articles, args.dump_pickles)
   #------------------------------------------------------------------------------#
+
+  # Our dev is also test...
+  test_data = dev_data
 
   train = train_data.data
   dev = dev_data.data
-  test = test_data.data
+  test = dev_data.data
   batch_size = args.batch_size
   test_batch_size = args.test_batch_size
   train_ques_to_para = train_data.question_to_paragraph
   dev_ques_to_para = dev_data.question_to_paragraph
-  test_ques_to_para = test_data.question_to_paragraph
+  test_ques_to_para = dev_data.question_to_paragraph
   train_tokenized_paras = train_data.tokenized_paras
   dev_tokenized_paras = dev_data.tokenized_paras
-  test_tokenized_paras = test_data.tokenized_paras
+  test_tokenized_paras = dev_data.tokenized_paras
   
   # Sort data by increasing question+answer length, for efficient batching.
   # Data format = (tokenized_question, tokenized_answer, question_id).
@@ -108,7 +107,9 @@ def build_model(args, vocab_size, index_to_word, word_to_index):
   config = { 'embed_size' : args.embed_size,
              'vocab_size' : vocab_size,
              'hidden_size' : args.hidden_size,
+             'decay_rate' : args.decay_rate,
              'lr' : args.learning_rate,
+             'dropout' : args.dropout,
              'glove_path' : args.glove_path,
              'use_glove' : not args.disable_glove,
              'ckpt': args.ckpt,
@@ -124,6 +125,9 @@ def build_model(args, vocab_size, index_to_word, word_to_index):
   print "%d OOV words." % model.oov_count
   print "OOV Words:",
   print model.oov_list[:10]
+
+  if not args.disable_glove:
+    print "Embedding dim:", model.embedding.shape
 
   if args.cuda:
     model = model.cuda()
@@ -151,6 +155,9 @@ def train_model(args):
   last_done_epoch = config['ckpt']
   if last_done_epoch > 0:
     model = model.load(args.model_dir, last_done_epoch)
+    print "Loaded model."
+    if not args.disable_glove:
+      print "Embedding shape:", model.embedding.shape
 
   start_time = time.time()
   print "Starting training."
@@ -160,7 +167,7 @@ def train_model(args):
     optimizer = SGD(model.parameters(), lr = args.learning_rate)
   elif args.optimizer == "Adamax":
     print "Using Adamax optimizer."
-    optimizer = Adamax(model.parameters())
+    optimizer = Adamax(model.parameters(), lr = args.learning_rate)
     if last_done_epoch > 0:
       if os.path.exists(args.model_dir + "/optim_%d.pt" % last_done_epoch):
         optimizer = torch.load(args.model_dir + "/optim_%d.pt" % last_done_epoch)
@@ -172,8 +179,8 @@ def train_model(args):
 
   for EPOCH in range(last_done_epoch+1, args.epochs):
     start_t = time.time()
-    random.shuffle(train_order)
     train_loss_sum = 0.0
+    model.train()
     for i, num in enumerate(train_order):
       print "\rTrain epoch %d, %.2f s - (Done %d of %d)" %\
             (EPOCH, (time.time()-start_t)*(len(train_order)-i-1)/(i+1), i+1,
@@ -216,8 +223,13 @@ def train_model(args):
           (train_loss_sum/len(train_order), time.time() - start_t)
 
     # End of epoch.
+    random.shuffle(train_order)
     model.zero_grad()
     model.save(args.model_dir, EPOCH)
+
+    # Updating LR for optimizer
+    for param in optimizer.param_groups:
+      param['lr'] *= config['decay_rate']
     if args.optimizer == "Adamax":
       torch.save(optimizer, args.model_dir + "/optim_%d.pt" % EPOCH)
 
@@ -227,6 +239,7 @@ def train_model(args):
     all_predictions = {}
     print "\nRunning on Dev."
 
+    model.eval()
     for i, num in enumerate(dev_order):
       print "\rDev: %.2f s (Done %d of %d)" %\
             ((time.time()-dev_start_t)*(len(dev_order)-i-1)/(i+1), i+1,
@@ -268,7 +281,7 @@ def train_model(args):
       best_idxs = []
       for idx in range(len(dev_batch)):
         best_prob = -1
-        best = []
+        best = [0, 0]
         max_end = paras_lens_in[idx]
         for j, start_prob in enumerate(distributions[0][idx][:max_end]):
           cur_end_idx = min(j + args.max_answer_span, max_end)
@@ -322,10 +335,14 @@ def test_model(args):
   #------------------------- Reload and test model ----------------------------#
   last_done_epoch = config['ckpt']
   model = model.load(args.model_dir, last_done_epoch)
+  print "Loaded model."
+  if not args.disable_glove:
+    print "Embedding shape:", model.embedding.shape
 
   test_start_t = time.time()
   test_loss_sum = 0.0
   all_predictions = {}
+  model.eval()
 
   for i, num in enumerate(test_order):
     print "\rTest: %.2f s (Done %d of %d) " %\
@@ -368,7 +385,7 @@ def test_model(args):
     best_idxs = []
     for idx in range(len(test_batch)):
       best_prob = -1
-      best = []
+      best = [0, 0]
       max_end = paras_lens_in[idx]
       for j, start_prob in enumerate(distributions[0][idx][:max_end]):
         cur_end_idx = min(j + args.max_answer_span, max_end)

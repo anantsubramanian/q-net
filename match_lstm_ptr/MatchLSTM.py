@@ -34,7 +34,10 @@ class MatchLSTM(nn.Module):
       self.embedding = embeddings
     else:
       self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
-                                    self.word_to_index['<pad>'])
+                                    self.word_to_index['<PAD>'])
+
+    self.dropoutp = nn.Dropout(self.dropout)
+    self.dropoutq = nn.Dropout(self.dropout)
     
     # Passage and Question LSTMs (matrices Hp and Hq respectively).
     self.passage_lstm = nn.LSTM(input_size = self.embed_size,
@@ -62,13 +65,11 @@ class MatchLSTM(nn.Module):
     self.attend_match_lstm = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
     self.attend_answer = nn.Linear(self.hidden_size, self.hidden_size)
     self.beta_transform = nn.Linear(self.hidden_size, 1)
+    self.dropout_ptr = nn.Dropout(self.dropout/2)
 
     # Answer pointer LSTM.
     self.answer_pointer_lstm = nn.LSTMCell(input_size = 2 * self.hidden_size,
                                            hidden_size = self.hidden_size)
-
-    # Loss layer.
-    self.cross_entropy_loss = nn.CrossEntropyLoss()
 
   # Load configuration options
   def load_from_config(self, config):
@@ -82,6 +83,7 @@ class MatchLSTM(nn.Module):
     self.word_to_index = config['word_to_index']
     self.use_glove = config['use_glove']
     self.use_cuda = config['cuda']
+    self.dropout = config['dropout']
 
   def save(self, path, epoch):
     torch.save(self, path + "/epoch_" + str(epoch) + ".pt")
@@ -155,6 +157,8 @@ class MatchLSTM(nn.Module):
       p = self.get_glove_embeddings(passage[0])
       q = self.get_glove_embeddings(question[0])
 
+    p = self.dropoutp(p)
+    q = self.dropoutq(q)
     # Preprocessing LSTM outputs.
     # H{p,q}.shape = (seq_len, batch, hdim)
     Hp, _ = self.passage_lstm(p, self.get_initial_lstm(batch_size, False))
@@ -204,9 +208,9 @@ class MatchLSTM(nn.Module):
         # Hq = (seq_len, batch, hdim)
         # weighted_Hq_f.shape = (batch, hdim)
         weighted_Hq_f = torch.squeeze(torch.bmm(alpha_f.permute(1, 2, 0),
-                                      torch.transpose(Hq, 0, 1)))
+                                      torch.transpose(Hq, 0, 1)), dim=1)
         weighted_Hq_b = torch.squeeze(torch.bmm(alpha_b.permute(1, 2, 0),
-                                      torch.transpose(Hq, 0, 1)))
+                                      torch.transpose(Hq, 0, 1)), dim=1)
 
         # z{f,b}.shape = (batch, 2 * hdim)
         zf = torch.cat((Hp[forward_idx], weighted_Hq_f), dim=-1)
@@ -233,9 +237,9 @@ class MatchLSTM(nn.Module):
         cb = cb * mask_b
         
         # Append hidden states to create Hf and Hb matrices.
-        # h{f,b}.shape = (1, batch, hdim)
-        Hf.append(torch.squeeze(hf))
-        Hb.append(torch.squeeze(hb))
+        # h{f,b}.shape = (batch, hdim)
+        Hf.append(hf)
+        Hb.append(hb)
     
     # H{f,b}.shape = (seq_len, batch, hdim)
     Hb = Hb[::-1]
@@ -245,36 +249,44 @@ class MatchLSTM(nn.Module):
     # Hr.shape = (seq_len, batch, 2 * hdim)
     Hr = torch.cat((Hf, Hb), dim=-1)
 
+    Hr = self.dropout_ptr(Hr)
     # attended_match_lstm.shape = (seq_len, batch, hdim)
     attended_match_lstm = self.attend_match_lstm(Hr)
     # {h,c}a.shape = (1, batch, hdim)
     ha, ca = self.get_initial_lstm(batch_size)
-    answer_scores = []
     answer_distributions = []
+    losses = []
     for k in range(2):
       # Fk.shape = (seq_len, batch, hdim)
       Fk = f.tanh(attended_match_lstm + self.attend_answer(ha))
 
-      # beta_k.shape = (seq_len, batch, 1)
+      # beta_k_scores.shape = (seq_len, batch, 1)
+      beta_ks = []
       beta_k_scores = self.beta_transform(Fk)
-      beta_k = f.softmax(beta_k_scores, dim=0)
+      for idx in range(batch_size):
+        beta_k_idx = f.softmax(beta_k_scores[:passage_lens[idx],idx,:], dim=0)
+        if beta_k_idx.size()[0] < max_passage_len:
+          diff = max_passage_len - beta_k_idx.size()[0]
+          zeros = self.variable(torch.zeros((diff, 1)))
+          beta_k_idx = torch.cat((beta_k_idx, zeros), dim=0)
+        # beta_k_idx.shape = (max_seq_len, 1)
+        beta_ks.append(beta_k_idx)
+        losses.append(-torch.log(torch.squeeze(beta_k_idx[answer[k][idx]])))
+
+      # beta_k.shape = (seq_len, batch, 1)
+      beta_k = torch.stack(beta_ks, dim=1)
 
       # Store distribution over passage words for answer start/end.
-      answer_scores.append(torch.squeeze(beta_k_scores))
-      answer_distributions.append(torch.t(torch.squeeze(beta_k)))
+      answer_distributions.append(torch.t(torch.squeeze(beta_k, dim=-1)))
 
       # weighted_Hr.shape = (batch, 2*hdim)
       weighted_Hr = torch.squeeze(torch.bmm(beta_k.permute(1, 2, 0),
-                                  torch.transpose(Hr, 0, 1)))
+                                  torch.transpose(Hr, 0, 1)), dim=1)
       
       # LSTM step.
       ha, ca = self.answer_pointer_lstm(weighted_Hr, (ha, ca))
 
     # Compute the loss.
-    self.loss = self.cross_entropy_loss(torch.t(answer_scores[0]),
-                                        torch.squeeze(self.placeholder(answer[0], False)))
-    self.loss += self.cross_entropy_loss(torch.t(answer_scores[1]),
-                                         torch.squeeze(self.placeholder(answer[1], False)))
-
+    self.loss = sum(losses)/batch_size
     return answer_distributions
 
