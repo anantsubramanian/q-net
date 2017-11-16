@@ -382,7 +382,7 @@ def train_model(args):
       for idx in range(len(dev_batch)):
         best_prob = -1
         best = [0, 0]
-        max_end = paras_lens_in[idx]
+        max_end = passage_input_lens[idx]
         for j, start_prob in enumerate(distributions[0][idx][:max_end]):
           cur_end_idx = min(j + args.max_answer_span, max_end)
           end_idx = np.argmax(distributions[1][idx][j:cur_end_idx])
@@ -485,7 +485,7 @@ def test_model(args):
     for idx in range(len(test_batch)):
       best_prob = -1
       best = [0, 0]
-      max_end = paras_lens_in[idx]
+      max_end = passage_input_lens[idx]
       for j, start_prob in enumerate(distributions[0][idx][:max_end]):
         cur_end_idx = min(j + args.max_answer_span, max_end)
         end_idx = np.argmax(distributions[1][idx][j:cur_end_idx])

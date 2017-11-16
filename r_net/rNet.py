@@ -218,6 +218,7 @@ class rNet(nn.Module):
     char_word_emb_q_f = torch.transpose(self.char_embedding(padded_char_word_q_f), 0 , 1)
     char_word_emb_q_b = torch.transpose(self.char_embedding(padded_char_word_q_b), 0 , 1)
 
+
     # Hc_w_q_{f,b}.shape = (max_word_len, total_words, hidden_size)
     Hc_w_q_f, _ = self.char_gru(char_word_emb_q_f,
                                 self.get_initial_gru(total_words_q, 1))
@@ -281,11 +282,11 @@ class rNet(nn.Module):
     for idx in range(batch_size):
       pad_len = max_passage_len - passage_lens[idx]
       indexes = self.variable(torch.arange(passage_lens[idx]-1, -1, -1).long())
-      #p_c_b_idx = torch.index_select(p_c_f[:,idx,:], dim=0, indexes)
       p_c_b_idx = p_c_f[:,idx,:].index_select(0, indexes)
-      p_c_b.append(torch.cat((p_c_b_idx,
-                              self.variable(torch.zeros(pad_len, 2 * self.hidden_size))),
-                             dim=0))
+      if passage_lens[idx] < max_passage_len:
+        zeros = self.variable(torch.zeros(pad_len, 2 * self.hidden_size))
+        p_c_b_idx = torch.cat((p_c_b_idx, zeros), dim=0)
+      p_c_b.append(p_c_b_idx)
 
     # p_c_b.shape = (seq_len, batch_size, 2 * hidden_size)
     p_c_b = torch.stack(p_c_b, dim=1)
@@ -294,11 +295,11 @@ class rNet(nn.Module):
     for idx in range(batch_size):
       pad_len = max_question_len - question_lens[idx]
       indexes = self.variable(torch.arange(question_lens[idx]-1, -1, -1).long())
-      #q_c_b_idx = torch.index_select(q_c_f[:,idx,:], dim=0, indexes)
       q_c_b_idx = q_c_f[:,idx,:].index_select(0, indexes)
-      q_c_b.append(torch.cat((q_c_b_idx,
-                              self.variable(torch.zeros(pad_len, 2 * self.hidden_size))),
-                             dim=0))
+      if question_lens[idx] < max_question_len:
+        zeros = self.variable(torch.zeros(pad_len, 2 * self.hidden_size))
+        q_c_b_idx = torch.cat((q_c_b_idx, zeros), dim=0)
+      q_c_b.append(q_c_b_idx)
 
     # q_c_b.shape = (seq_len, batch_size, 2 * hidden_size)
     q_c_b = torch.stack(q_c_b, dim=1)
