@@ -1,6 +1,7 @@
 import numpy as np
 import ipdb as pdb
 import sys
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as f
@@ -39,7 +40,7 @@ class rNet(nn.Module):
     else:
       self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
                                     self.word_to_index['<pad>'])
-    
+
     # Passage and Question character level GRUs.
     self.char_gru = nn.GRU(input_size = self.embed_size//2,
                            hidden_size = self.hidden_size,
@@ -77,9 +78,14 @@ class rNet(nn.Module):
     # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
     # and answer pointer." arXiv preprint arXiv:1608.07905 (2016).)
     self.attend_question = nn.Linear(2*self.hidden_size, self.hidden_size, bias = False)
-    self.attend_passage = nn.Linear(2*self.hidden_size, self.hidden_size)
+    self.attend_passage = nn.Linear(2*self.hidden_size, self.hidden_size, bias = False)
     self.attend_hidden = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
-    self.alpha_transform = nn.Linear(self.hidden_size, 1)
+    self.alpha_transform = nn.Linear(self.hidden_size, 1, bias = False)
+
+    # Attention gating for MatchLSTM.
+    self.gate_match_attention = nn.Linear(4 * self.hidden_size,
+                                          4 * self.hidden_size,
+                                          bias = False)
 
     # Final Match-LSTM cells (bi-directional).
     self.match_lstm = nn.LSTMCell(input_size = 4 * self.hidden_size,
@@ -89,10 +95,25 @@ class rNet(nn.Module):
     #self.match_lstm_backward = nn.LSTMCell(input_size = 2 * self.hidden_size,
     #                                       hidden_size = self.hidden_size)
 
+    # Self-matching module parameters.
+    self.match_lstm_dropout = nn.Dropout(self.dropout)
+    self.attend_self_passage = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
+    self.attend_self_hidden = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
+    self.gamma_transform = nn.Linear(self.hidden_size, 1, bias = False)
+
+    # Attention gating for self-matching LSTM.
+    self.gate_self_attention = nn.Linear(4 * self.hidden_size,
+                                         4 * self.hidden_size,
+                                         bias = False)
+
+    # Final self-matching LSTM cells (bi-directional).
+    self.self_lstm = nn.LSTMCell(input_size = 4 * self.hidden_size,
+                                 hidden_size = self.hidden_size)
+
     # Answer pointer attention transformations.
-    self.attend_match_lstm = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
-    self.attend_answer = nn.Linear(self.hidden_size, self.hidden_size)
-    self.beta_transform = nn.Linear(self.hidden_size, 1)
+    self.attend_self_lstm = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
+    self.attend_answer = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
+    self.beta_transform = nn.Linear(self.hidden_size, 1, bias = False)
 
     # Answer pointer LSTM.
     self.answer_dropout = nn.Dropout(self.dropout)
@@ -124,6 +145,9 @@ class rNet(nn.Module):
     self.passage_lstm.flatten_parameters()
     self.question_lstm.flatten_parameters()
     return self
+
+  def free_memory(self):
+    del self.loss
 
   # Calls torch nn utils rnn pack_padded_sequence.
   # For Question and Passage LSTMs.
@@ -200,24 +224,40 @@ class rNet(nn.Module):
     passage_lens = passage_f[1]
     question_lens = question_b[1]
 
-    padded_char_word_q_f = self.placeholder(char_word_q_f[0], False)
-    padded_char_word_q_b = self.placeholder(char_word_q_b[0], False)
-    padded_char_word_p_f = self.placeholder(char_word_p_f[0], False)
-    padded_char_word_p_b = self.placeholder(char_word_p_b[0], False)
+    char_start = time.time()
+
+    padded_char_word_q_f = self.placeholder(char_word_q_f[0], False).contiguous()
+    padded_char_word_q_b = self.placeholder(char_word_q_b[0], False).contiguous()
+    padded_char_word_p_f = self.placeholder(char_word_p_f[0], False).contiguous()
+    padded_char_word_p_b = self.placeholder(char_word_p_b[0], False).contiguous()
 
     char_word_q_lens = char_word_q_f[1]
     char_word_p_lens = char_word_p_b[1]
+
+    p_word_ids_f = passage_f[0].reshape(-1)
+    p_uniq_w_f, p_uniq_widx_f, p_word_order_f = np.unique(p_word_ids_f,return_index=True, return_inverse=True)
+
+    p_word_ids_b = passage_b[0].reshape(-1)
+    p_uniq_w_b, p_uniq_widx_b, p_word_order_b = np.unique(p_word_ids_b,return_index=True, return_inverse=True)
+
+    q_word_ids_f = question_f[0].reshape(-1)
+    q_uniq_w_f, q_uniq_widx_f, q_word_order_f = np.unique(q_word_ids_f,return_index=True, return_inverse=True)
+
+    q_word_ids_b = question_b[0].reshape(-1)
+    q_uniq_w_b, q_uniq_widx_b, q_word_order_b = np.unique(q_word_ids_b,return_index=True, return_inverse=True)
 
     # Get character level embedding for the words in the question.
     # padded_char_word_q_{f,b}.shape = (total_words, max_word_len)
     padded_char_word_q_f = padded_char_word_q_f.view(-1, max_char_word_len_q)
     padded_char_word_q_b = padded_char_word_q_b.view(-1, max_char_word_len_q)
+    uniq_padded_char_word_q_f = padded_char_word_q_f[q_uniq_widx_f]
+    uniq_padded_char_word_q_b = padded_char_word_q_b[q_uniq_widx_b]
+    uniq_char_word_q_lens = (char_word_q_lens.reshape((-1))-1)[q_uniq_widx_f]
 
     # char_word_emb_q_{f,b}.shape = (max_word_len, total_words, emb_size)
-    total_words_q = padded_char_word_q_f.size()[0]
-    char_word_emb_q_f = torch.transpose(self.char_embedding(padded_char_word_q_f), 0 , 1)
-    char_word_emb_q_b = torch.transpose(self.char_embedding(padded_char_word_q_b), 0 , 1)
-
+    total_words_q = uniq_padded_char_word_q_f.size()[0]
+    char_word_emb_q_f = torch.transpose(self.char_embedding(uniq_padded_char_word_q_f), 0 , 1)
+    char_word_emb_q_b = torch.transpose(self.char_embedding(uniq_padded_char_word_q_b), 0 , 1)
 
     # Hc_w_q_{f,b}.shape = (max_word_len, total_words, hidden_size)
     Hc_w_q_f, _ = self.char_gru(char_word_emb_q_f,
@@ -225,9 +265,9 @@ class rNet(nn.Module):
     Hc_w_q_b, _ = self.char_gru(char_word_emb_q_b,
                                 self.get_initial_gru(total_words_q, 1))
 
-    # Get only the last layer 
+    # Get only the last layer
     # Hc_w_p_{f,b}s.shape = (total_words, hidden_size)
-    last_word_idxs = char_word_q_lens.reshape((-1))-1
+    last_word_idxs = uniq_char_word_q_lens.reshape((-1))-1
     Hc_w_q_fs, Hc_w_q_bs = [], []
     for i, word_idx in enumerate(last_word_idxs):
       Hc_w_q_fs.append(Hc_w_q_f[word_idx,i,:])
@@ -235,6 +275,9 @@ class rNet(nn.Module):
 
     Hc_w_q_f = torch.stack(Hc_w_q_fs, dim=0)
     Hc_w_q_b = torch.stack(Hc_w_q_bs, dim=0)
+
+    Hc_w_q_f = Hc_w_q_f[q_word_order_f]
+    Hc_w_q_b = Hc_w_q_b[q_word_order_b]
 
     # Hc_w_q_{f,b}.shape = (seq_len, batch_size, hidden_size)
     Hc_w_q_f = Hc_w_q_f.view(-1, batch_size, self.hidden_size)
@@ -248,19 +291,23 @@ class rNet(nn.Module):
     padded_char_word_p_f = padded_char_word_p_f.view(-1, max_char_word_len_p)
     padded_char_word_p_b = padded_char_word_p_b.view(-1, max_char_word_len_p)
 
+    uniq_padded_char_word_p_f = padded_char_word_p_f[p_uniq_widx_f]
+    uniq_padded_char_word_p_b = padded_char_word_p_b[p_uniq_widx_b]
+    uniq_char_word_p_lens = (char_word_p_lens.reshape((-1))-1)[p_uniq_widx_f]
+
     # char_word_emb_p_{f,b}.shape = (max_word_len, total_words, emb_size)
-    total_words_p = padded_char_word_p_f.size()[0]
-    char_word_emb_p_f = torch.transpose(self.char_embedding(padded_char_word_p_f), 0 , 1)
-    char_word_emb_p_b = torch.transpose(self.char_embedding(padded_char_word_p_b), 0 , 1)
+    total_words_p = uniq_padded_char_word_p_f.size()[0]
+    char_word_emb_p_f = torch.transpose(self.char_embedding(uniq_padded_char_word_p_f), 0 , 1)
+    char_word_emb_p_b = torch.transpose(self.char_embedding(uniq_padded_char_word_p_b), 0 , 1)
 
     # Hc_w_p_{f,b}.shape = (max_word_len, total_words, hidden_size)
     Hc_w_p_f, _ = self.char_gru(char_word_emb_p_f,
                                 self.get_initial_gru(total_words_p, 1))
     Hc_w_p_b, _ = self.char_gru(char_word_emb_p_b,
                                 self.get_initial_gru(total_words_p, 1))
-    # Get only the last layer 
+    # Get only the last layer
     # Hc_w_p_{f,b}s.shape = (total_words, hidden_size)
-    last_word_idxs = char_word_p_lens.reshape((-1))-1
+    last_word_idxs = uniq_char_word_p_lens.reshape((-1))-1
     Hc_w_p_fs, Hc_w_p_bs = [], []
     for i, word_idx in enumerate(last_word_idxs):
       Hc_w_p_fs.append(Hc_w_p_f[word_idx,i,:])
@@ -268,6 +315,9 @@ class rNet(nn.Module):
 
     Hc_w_p_f = torch.stack(Hc_w_p_fs, dim=0)
     Hc_w_p_b = torch.stack(Hc_w_p_bs, dim=0)
+
+    Hc_w_p_f = Hc_w_p_f[p_word_order_f]
+    Hc_w_p_b = Hc_w_p_b[p_word_order_b]
 
     # Hc_w_p_{f,b}.shape = (sep_len, batch_size, hidden_size)
     Hc_w_p_f = Hc_w_p_f.view(-1, batch_size, self.hidden_size)
@@ -315,7 +365,7 @@ class rNet(nn.Module):
       q_f = self.get_glove_embeddings(question_f[0])
       p_b = self.get_glove_embeddings(passage_b[0])
       q_b = self.get_glove_embeddings(question_b[0])
-      
+
     # {p,q}_combined_{f,b}.shape = (seq_len, batch_size, 2 * hidden_size + embed_size)
     p_combined_f = torch.cat((p_f, p_c_f), dim=-1)
     q_combined_f = torch.cat((q_f, q_c_f), dim=-1)
@@ -333,11 +383,11 @@ class rNet(nn.Module):
     Hp_f, _ = self.preprocess_gru(p_combined_f,
                                   self.get_initial_gru(batch_size, 3))
     Hq_f, _ = self.preprocess_gru(q_combined_f,
-                                  self.get_initial_gru(batch_size, 3)) 
+                                  self.get_initial_gru(batch_size, 3))
     Hp_b, _ = self.preprocess_gru(p_combined_b,
                                   self.get_initial_gru(batch_size, 3))
     Hq_b, _ = self.preprocess_gru(q_combined_b,
-                                  self.get_initial_gru(batch_size, 3)) 
+                                  self.get_initial_gru(batch_size, 3))
 
     # H{p,q}.shape = (seq_len, batch, 2 * hdim)
     Hp = torch.cat((Hp_f, Hp_b), dim=-1)
@@ -372,6 +422,7 @@ class rNet(nn.Module):
         forward_idx = i
         backward_idx = max_passage_len-i-1
         # g{f,b}.shape = (seq_len, batch, hdim)
+        attn_start = time.time()
         gf = f.tanh(attended_question + \
                 (self.attend_passage(Hp[forward_idx]).expand_as(attended_question) + \
                  self.attend_hidden(hf)))
@@ -405,6 +456,12 @@ class rNet(nn.Module):
         zf = zf * mask_f
         zb = zb * mask_b
 
+        # Gating the input to the MatchLSTM.
+        gating_f = f.sigmoid(self.gate_match_attention(zf))
+        gating_b = f.sigmoid(self.gate_match_attention(zb))
+        zf = zf * gating_f
+        zb = zb * gating_b
+
         # Take forward and backward LSTM steps, with zf and zb as inputs.
         hf, cf = self.match_lstm(zf, (hf, cf))
         hb, cb = self.match_lstm(zb, (hb, cb))
@@ -414,32 +471,111 @@ class rNet(nn.Module):
         cf = cf * mask_f
         hb = hb * mask_b
         cb = cb * mask_b
-        
+
         # Append hidden states to create Hf and Hb matrices.
         # h{f,b}.shape = (batch, hdim)
         Hf.append(hf)
         Hb.append(hb)
-    
+
     # H{f,b}.shape = (seq_len, batch, hdim)
     Hb = Hb[::-1]
     Hf = torch.stack(Hf, dim=0)
     Hb = torch.stack(Hb, dim=0)
-    
+
+    # Hr.shape = (seq_len, batch, 2 * hdim)
+    Hr = torch.cat((Hf, Hb), dim=-1)
+
+    # Dropout output of MatchLSTM.
+    self.match_lstm_dropout(Hr)
+
+    # Bi-directional self-matching LSTM layer.
+    # Initial hidden and cell states for forward and backward LSTMs.
+    # h{f,b}.shape = (1, batch, hdim)
+    hf, cf = self.get_initial_lstm(batch_size)
+    hb, cb = self.get_initial_lstm(batch_size)
+
+    # Get vectors zi for each i in passage.
+    # Attended passage is the same at each time step. Just compute it once.
+    # attended_passage.shape = (seq_len, batch, hdim)
+    attended_passage = self.attend_self_passage(Hr)
+    Hf, Hb = [], []
+    for i in range(max_passage_len):
+        forward_idx = i
+        backward_idx = max_passage_len-i-1
+        # g{f,b}.shape = (seq_len, batch, hdim)
+        gf = f.tanh(attended_passage + \
+                (self.attend_passage(Hr[forward_idx]).expand_as(attended_passage)))
+        gb = f.tanh(attended_passage + \
+                (self.attend_passage(Hr[backward_idx]).expand_as(attended_passage)))
+
+        # gamma_{f,g}.shape = (seq_len, batch, 1)
+        gamma_f = f.softmax(self.gamma_transform(gf), dim=0)
+        gamma_b = f.softmax(self.gamma_transform(gb), dim=0)
+
+        # Hr[{forward,backward}_idx].shape = (batch, 2 * hdim)
+        # Hr = (seq_len, batch, 2 * hdim)
+        # weighted_Hr_f.shape = (batch, 2 * hdim)
+        weighted_Hr_f = torch.squeeze(torch.bmm(gamma_f.permute(1, 2, 0),
+                                      torch.transpose(Hr, 0, 1)), dim=1)
+        weighted_Hr_b = torch.squeeze(torch.bmm(gamma_b.permute(1, 2, 0),
+                                      torch.transpose(Hr, 0, 1)), dim=1)
+
+        # z{f,b}.shape = (batch, 4 * hdim)
+        zf = torch.cat((Hr[forward_idx], weighted_Hr_f), dim=-1)
+        zb = torch.cat((Hr[backward_idx], weighted_Hr_b), dim=-1)
+
+        # Mask vectors for {z,h,c}{f,b}.
+        mask_f = np.array([ [1.0] if forward_idx < passage_lens[i] else [0.0] \
+                              for i in range(batch_size) ])
+        mask_b = np.array([ [1.0] if backward_idx < passage_lens[i] else [0.0] \
+                              for i in range(batch_size) ])
+        mask_f = self.placeholder(mask_f)
+        mask_b = self.placeholder(mask_b)
+        zf = zf * mask_f
+        zb = zb * mask_b
+
+        # Gating the input to the self-match LSTM.
+        gating_f = f.sigmoid(self.gate_self_attention(zf))
+        gating_b = f.sigmoid(self.gate_self_attention(zb))
+        zf = zf * gating_f
+        zb = zb * gating_b
+
+        # Take forward and backward LSTM steps, with zf and zb as inputs.
+        hf, cf = self.match_lstm(zf, (hf, cf))
+        hb, cb = self.match_lstm(zb, (hb, cb))
+
+        # Back to initial zero states for padded regions.
+        hf = hf * mask_f
+        cf = cf * mask_f
+        hb = hb * mask_b
+        cb = cb * mask_b
+
+        # Append hidden states to create Hf and Hb matrices.
+        # h{f,b}.shape = (batch, hdim)
+        Hf.append(hf)
+        Hb.append(hb)
+
+    # H{f,b}.shape = (seq_len, batch, hdim)
+    Hb = Hb[::-1]
+    Hf = torch.stack(Hf, dim=0)
+    Hb = torch.stack(Hb, dim=0)
+
     # Hr.shape = (seq_len, batch, 2 * hdim)
     Hr = torch.cat((Hf, Hb), dim=-1)
 
     # Answer pointer input dropout.
     Hr = self.answer_dropout(Hr)
 
-    # attended_match_lstm.shape = (seq_len, batch, hdim)
-    attended_match_lstm = self.attend_match_lstm(Hr)
+    # attended_self_lstm.shape = (seq_len, batch, hdim)
+    attended_self_lstm = self.attend_self_lstm(Hr)
+
     # {h,c}a.shape = (1, batch, hdim)
     ha, ca = self.get_initial_lstm(batch_size)
     answer_distributions = []
     losses = []
     for k in range(2):
       # Fk.shape = (seq_len, batch, hdim)
-      Fk = f.tanh(attended_match_lstm + self.attend_answer(ha))
+      Fk = f.tanh(attended_self_lstm + self.attend_answer(ha))
 
       # beta_k_scores.shape = (seq_len, batch, 1)
       beta_ks = []
@@ -463,7 +599,7 @@ class rNet(nn.Module):
       # weighted_Hr.shape = (batch, 2*hdim)
       weighted_Hr = torch.squeeze(torch.bmm(beta_k.permute(1, 2, 0),
                                   torch.transpose(Hr, 0, 1)), dim=1)
-      
+
       # LSTM step.
       ha, ca = self.answer_pointer_lstm(weighted_Hr, (ha, ca))
 

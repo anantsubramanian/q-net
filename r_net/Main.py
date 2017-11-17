@@ -12,7 +12,7 @@ from operator import itemgetter
 from torch.autograd import Variable
 from torch.optim import SGD, Adamax, Adadelta
 from Input import Dictionary, Data, pad, read_data
-from rNet import rNet 
+from rNet import rNet
 
 def init_parser():
   parser = argparse.ArgumentParser()
@@ -77,13 +77,16 @@ def read_and_process_data(args):
   print "Sorting datasets in decreasing order of (para + question) lengths."
   train.sort(cmp=lambda x,y:\
       len(x[0]) + len(train_tokenized_paras[train_ques_to_para[x[2]]]) -\
-      (len(y[0]) + len(train_tokenized_paras[train_ques_to_para[y[2]]])))
+      (len(y[0]) + len(train_tokenized_paras[train_ques_to_para[y[2]]])),
+      reverse=True)
   dev.sort(cmp=lambda x,y:\
       len(x[0]) + len(dev_tokenized_paras[dev_ques_to_para[x[2]]]) -\
-      (len(y[0]) + len(dev_tokenized_paras[dev_ques_to_para[y[2]]])))
+      (len(y[0]) + len(dev_tokenized_paras[dev_ques_to_para[y[2]]])),
+      reverse=True)
   test.sort(cmp=lambda x,y:\
       len(x[0]) + len(test_tokenized_paras[test_ques_to_para[x[2]]]) -\
-      (len(y[0]) + len(test_tokenized_paras[test_ques_to_para[y[2]]])))
+      (len(y[0]) + len(test_tokenized_paras[test_ques_to_para[y[2]]])),
+      reverse=True)
   print "Done."
 
   # Debug flag reduces size of input data, for testing purposes.
@@ -244,7 +247,7 @@ def train_model(args):
   dev_tokenized_paras, test_tokenized_paras, train_order, dev_order, test_order,\
   train_data, dev_data, test_data, train_tokenized_paras_chars,\
   dev_tokenized_paras_chars, test_tokenized_paras_chars = read_and_process_data(args)
-    
+
   # Build model
   model, config = build_model(args, train_data.dictionary.size(),
                               train_data.dictionary.index_to_word,
@@ -323,6 +326,7 @@ def train_model(args):
       model.loss.backward()
       optimizer.step()
       train_loss_sum += model.loss.data[0]
+      model.free_memory()
 
       print "Loss: %.5f (in time %.2fs)" % \
             (train_loss_sum/(i+1), time.time() - start_t),
@@ -377,7 +381,7 @@ def train_model(args):
       for qid in qids:
         if not qid in all_predictions:
           all_predictions[qid] = []
-      
+
       best_idxs = []
       for idx in range(len(dev_batch)):
         best_prob = -1
@@ -402,6 +406,7 @@ def train_model(args):
         all_predictions[qid] = answer
 
       dev_loss_sum += model.loss.data[0]
+      model.free_memory()
       print "[Average loss : %.5f]" % (dev_loss_sum/(i+1)),
       sys.stdout.flush()
 
@@ -426,7 +431,7 @@ def test_model(args):
   dev_tokenized_paras, test_tokenized_paras, train_order, dev_order, test_order,\
   train_data, dev_data, test_data, train_tokenized_paras_chars,\
   dev_tokenized_paras_chars, test_tokenized_paras_chars = read_and_process_data(args)
-    
+
   # Build model
   model, config = build_model(args, train_data.dictionary.size(),
                               train_data.dictionary.index_to_word,
@@ -453,7 +458,7 @@ def test_model(args):
           len(test_order)),
 
     test_batch = test[num:num+test_batch_size]
-    
+
     passage_input_f, passage_input_b, question_input_f, question_input_b,\
     passage_input_lens, question_input_lens, passage_input_chars_f,\
     passage_input_chars_b, question_input_chars_f, question_input_chars_b,\
@@ -480,7 +485,7 @@ def test_model(args):
     for qid in qids:
       if not qid in all_predictions:
         all_predictions[qid] = []
-    
+
     best_idxs = []
     for idx in range(len(test_batch)):
       best_prob = -1
@@ -505,6 +510,7 @@ def test_model(args):
       all_predictions[qid] = answer
 
     test_loss_sum += model.loss.data[0]
+    model.free_memory()
     print "[Average loss : %.5f]" % (test_loss_sum/(i+1)),
     sys.stdout.flush()
 
