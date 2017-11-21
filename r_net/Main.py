@@ -27,7 +27,7 @@ def init_parser():
   parser.add_argument('--max_dev_articles', type=int, default=-1)
   parser.add_argument('--embed_size', type=int, default=300)
   parser.add_argument('--hidden_size', type=int, default=75)
-  parser.add_argument('--learning_rate', type=float, default=0.5)
+  parser.add_argument('--learning_rate', type=float, default=0.005)
   parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt')
   parser.add_argument('--disable_glove', action='store_true')
   parser.add_argument('--ckpt', type=int, default=0)
@@ -35,9 +35,10 @@ def init_parser():
   parser.add_argument('--model_dir', default='./')
   parser.add_argument('--batch_size', type=int, default=32)
   parser.add_argument('--test_batch_size', type=int, default=32)
-  parser.add_argument('--optimizer', default='Adadelta') # 'SGD' or 'Adamax' or Adadelta
+  parser.add_argument('--optimizer', default='Adamax') # 'SGD' or 'Adamax' or Adadelta
   parser.add_argument('--debug', action='store_true')
   parser.add_argument('--dropout', type=float, default=0.2)
+  parser.add_argument('--decay', type=float, default=0.95)
   parser.add_argument('--cuda', action='store_true')
   parser.add_argument('--max_answer_span', type=int, default=15)
   return parser
@@ -125,7 +126,8 @@ def build_model(args, vocab_size, index_to_word, word_to_index, char_to_index,
              'char_to_index': char_to_index,
              'index_to_char': index_to_char,
              'dropout' : args.dropout,
-             'cuda': args.cuda }
+             'cuda': args.cuda,
+             'decay': args.decay }
   print "Building model."
   model = rNet(config)
   print "Done!"
@@ -339,6 +341,11 @@ def train_model(args):
     random.shuffle(train_order)
     model.zero_grad()
     model.save(args.model_dir, EPOCH)
+
+    # Updating LR for optimizer
+    for param in optimizer.param_groups:
+      param['lr'] *= config['decay']
+
     torch.save(optimizer, args.model_dir + "/optim_%d.pt" % EPOCH)
 
     # Run pass over dev data.

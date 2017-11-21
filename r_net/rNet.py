@@ -116,6 +116,8 @@ class rNet(nn.Module):
     self.beta_transform = nn.Linear(self.hidden_size, 1, bias = False)
 
     # Answer pointer LSTM.
+    self.answer_ptr_h_from_question = nn.Linear(2 * self.hidden_size, self.hidden_size)
+    self.answer_ptr_c_from_question = nn.Linear(2 * self.hidden_size, self.hidden_size)
     self.answer_dropout = nn.Dropout(self.dropout)
     self.answer_pointer_lstm = nn.LSTMCell(input_size = 2 * self.hidden_size,
                                            hidden_size = self.hidden_size)
@@ -569,8 +571,21 @@ class rNet(nn.Module):
     # attended_self_lstm.shape = (seq_len, batch, hdim)
     attended_self_lstm = self.attend_self_lstm(Hr)
 
+    # Get last layer of question representation to initialize
+    # pointer network LSTM hidden and cell states.
+    # Hq_last.shape = (batch, 2*hdim)
+    Hq_last = []
+    for idx in range(batch_size):
+      Hq_last.append(Hq[question_lens[idx],idx,:])
+    Hq_last = torch.stack(Hq_last, dim=0)
+
     # {h,c}a.shape = (1, batch, hdim)
-    ha, ca = self.get_initial_lstm(batch_size)
+    ha = self.answer_ptr_h_from_question(Hq_last).view(1,
+                                                       batch_size,
+                                                       self.hidden_size)
+    ca = self.answer_ptr_c_from_question(Hq_last).view(1,
+                                                       batch_size,
+                                                       self.hidden_size)
     answer_distributions = []
     losses = []
     for k in range(2):
