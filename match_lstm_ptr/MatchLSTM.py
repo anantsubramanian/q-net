@@ -17,6 +17,24 @@ class MatchLSTM(nn.Module):
     # Set-up parameters from config.
     self.load_from_config(config)
 
+    # Construct the model, storing all necessary layers.
+    self.build_model()
+
+  # Load configuration options
+  def load_from_config(self, config):
+    self.embed_size = config['embed_size']
+    self.vocab_size = config['vocab_size']
+    self.hidden_size = config['hidden_size']
+    self.lr_rate = config['lr']
+    self.glove_path = config['glove_path']
+    self.optimizer = config['optimizer']
+    self.index_to_word = config['index_to_word']
+    self.word_to_index = config['word_to_index']
+    self.use_glove = config['use_glove']
+    self.use_cuda = config['cuda']
+    self.dropout = config['dropout']
+
+  def build_model(self):
     # Embedding look-up.
     self.oov_count = 0
     self.oov_list = []
@@ -65,20 +83,6 @@ class MatchLSTM(nn.Module):
     self.answer_pointer_lstm = nn.LSTMCell(input_size = 2 * self.hidden_size,
                                            hidden_size = self.hidden_size)
 
-  # Load configuration options
-  def load_from_config(self, config):
-    self.embed_size = config['embed_size']
-    self.vocab_size = config['vocab_size']
-    self.hidden_size = config['hidden_size']
-    self.lr_rate = config['lr']
-    self.glove_path = config['glove_path']
-    self.optimizer = config['optimizer']
-    self.index_to_word = config['index_to_word']
-    self.word_to_index = config['word_to_index']
-    self.use_glove = config['use_glove']
-    self.use_cuda = config['cuda']
-    self.dropout = config['dropout']
-
   def save(self, path, epoch):
     torch.save(self, path + "/epoch_" + str(epoch) + ".pt")
 
@@ -119,7 +123,6 @@ class MatchLSTM(nn.Module):
     return (self.variable(torch.zeros(batch_size, self.hidden_size)),
             self.variable(torch.zeros(batch_size, self.hidden_size)))
 
-
   # inp.shape = (seq_len, batch)
   # output.shape = (seq_len, batch, embed_size)
   def get_glove_embeddings(self, inp):
@@ -129,64 +132,31 @@ class MatchLSTM(nn.Module):
         output[i][j] = self.embedding[word_id]
     return self.placeholder(output)
 
-  # Forward pass method.
-  # passage = tuple((seq_len, batch), len_within_batch)
-  # question = tuple((seq_len, batch), len_within_batch)
-  # answer = tuple((2, batch))
-  def forward(self, passage, question, answer):
-    if not self.use_glove:
-      padded_passage = self.placeholder(passage[0], False)
-      padded_question = self.placeholder(question[0], False)
-    batch_size = passage[0].shape[1]
-    max_passage_len = passage[0].shape[0]
-    max_question_len = question[0].shape[0]
-    passage_lens = passage[1]
-    question_lens = question[1]
+  # Get hidden states of a unidirectional pre-processing LSTM run over
+  # the given input sequence.
+  def preprocess_input(self, embedding_input, max_len, input_lens, batch_size):
+    H = []
+    h, c = self.get_initial_lstm(batch_size)
+    for t in range(max_len):
+      h, c = self.preprocessing_lstm(embedding_input[t], (h, c))
 
-    # Get embedded passage and question representations.
-    if not self.use_glove:
-      p = torch.transpose(self.embedding(torch.t(padded_passage)), 0, 1)
-      q = torch.transpose(self.embedding(torch.t(padded_question)), 0, 1)
-    else:
-      p = self.get_glove_embeddings(passage[0])
-      q = self.get_glove_embeddings(question[0])
-
-    p = self.dropoutp(p)
-    q = self.dropoutq(q)
-
-    # Preprocessing LSTM outputs.
-    Hp = []
-    Hq = []
-
-    # Pre-processing passage.
-    hp, cp = self.get_initial_lstm(batch_size)
-    for t in range(max_passage_len):
-      hp, cp = self.preprocessing_lstm(p[t], (hp, cp))
       # Don't use LSTM output gating.
-      hp = f.tanh(cp)
-      mask = self.placeholder(np.array([ [1.0] if t < passage_lens[i] else [0.0] \
+      h = f.tanh(c)
+
+      # Mask out padded regions of input.
+      mask = self.placeholder(np.array([ [1.0] if t < input_lens[i] else [0.0] \
                                            for i in range(batch_size) ]))
-      hp = hp * mask
-      cp = cp * mask
-      Hp.append(hp)
+      h = h * mask
+      c = c * mask
+      H.append(h)
 
-    # Pre-processing question.
-    hq, cq = self.get_initial_lstm(batch_size)
-    for t in range(max_question_len):
-      hq, cq = self.preprocessing_lstm(q[t], (hq, cq))
-      # Don't use LSTM output gating.
-      hq = f.tanh(cq)
-      mask = self.placeholder(np.array([ [1.0] if t < question_lens[i] else [0.0] \
-                                           for i in range(batch_size) ]))
-      hq = hq * mask
-      cq = cq * mask
-      Hq.append(hq)
+    # H.shape = (seq_len, batch, hdim)
+    H = torch.stack(H, dim=0)
+    return H
 
-    # H{p,q}.shape = (seq_len, batch, hdim)
-    Hp = torch.stack(Hp, dim=0)
-    Hq = torch.stack(Hq, dim=0)
-
-    # Bi-directional match-LSTM layer.
+  # Get a question-aware passage representation.
+  def match_question_passage(self, Hp, Hq, max_passage_len,
+                             passage_lens, batch_size):
     # Initial hidden and cell states for forward and backward LSTMs.
     # h{f,b}.shape = (1, batch, hdim)
     hf, cf = self.get_initial_lstm(batch_size)
@@ -256,14 +226,22 @@ class MatchLSTM(nn.Module):
     
     # Hr.shape = (seq_len, batch, 2 * hdim)
     Hr = torch.cat((Hf, Hb), dim=-1)
+    return Hr
 
-    Hr = self.dropout_ptr(Hr)
+  # Boundary pointer model, that gives probability distributions over the
+  # answer start and answer end indices. Additionally returns the loss
+  # for training.
+  def answer_pointer(self, Hr, max_passage_len, passage_lens, batch_size,
+                     answer):
     # attended_match_lstm.shape = (seq_len, batch, hdim)
     attended_match_lstm = self.attend_match_lstm(Hr)
+
     # {h,c}a.shape = (1, batch, hdim)
     ha, ca = self.get_initial_lstm(batch_size)
     answer_distributions = []
     losses = []
+
+    # Two-step LSTM: Point to the start of the answer first, then the end.
     for k in range(2):
       # Fk.shape = (seq_len, batch, hdim)
       Fk = f.tanh(attended_match_lstm + self.attend_answer(ha))
@@ -277,6 +255,7 @@ class MatchLSTM(nn.Module):
           diff = max_passage_len - beta_k_idx.size()[0]
           zeros = self.variable(torch.zeros((diff, 1)))
           beta_k_idx = torch.cat((beta_k_idx, zeros), dim=0)
+
         # beta_k_idx.shape = (max_seq_len, 1)
         beta_ks.append(beta_k_idx)
         losses.append(-torch.log(torch.squeeze(beta_k_idx[answer[k][idx]])))
@@ -295,6 +274,53 @@ class MatchLSTM(nn.Module):
       ha, ca = self.answer_pointer_lstm(weighted_Hr, (ha, ca))
 
     # Compute the loss.
-    self.loss = sum(losses)/batch_size
+    loss = sum(losses)/batch_size
+    return answer_distributions, loss
+
+  # Forward pass method.
+  # passage = tuple((seq_len, batch), len_within_batch)
+  # question = tuple((seq_len, batch), len_within_batch)
+  # answer = tuple((2, batch))
+  def forward(self, passage, question, answer):
+    if not self.use_glove:
+      padded_passage = self.placeholder(passage[0], False)
+      padded_question = self.placeholder(question[0], False)
+    batch_size = passage[0].shape[1]
+    max_passage_len = passage[0].shape[0]
+    max_question_len = question[0].shape[0]
+    passage_lens = passage[1]
+    question_lens = question[1]
+
+    # Get embedded passage and question representations.
+    if not self.use_glove:
+      p = torch.transpose(self.embedding(torch.t(padded_passage)), 0, 1)
+      q = torch.transpose(self.embedding(torch.t(padded_question)), 0, 1)
+    else:
+      p = self.get_glove_embeddings(passage[0])
+      q = self.get_glove_embeddings(question[0])
+
+    # Embedding input dropout.
+    p = self.dropoutp(p)
+    q = self.dropoutq(q)
+
+    # Preprocessing LSTM outputs for passage and question input.
+    # H{p,q}.shape = (seq_len, batch, hdim)
+    Hp = self.preprocess_input(p, max_passage_len, passage_lens, batch_size)
+    Hq = self.preprocess_input(q, max_question_len, question_lens, batch_size)
+
+    # Bi-directional match-LSTM layer.
+    # Hr.shape = (seq_len, batch, 2 * hdim)
+    Hr = self.match_question_passage(Hp, Hq, max_passage_len, passage_lens,
+                                     batch_size)
+    # Question-aware passage representation dropout.
+    Hr = self.dropout_ptr(Hr)
+
+    # Get probability distributions over the answer start, answer end,
+    # and the loss for training.
+    answer_distributions, loss = \
+      self.answer_pointer(Hr, max_passage_len, passage_lens, batch_size,
+                          answer)
+
+    self.loss = loss
     return answer_distributions
 
