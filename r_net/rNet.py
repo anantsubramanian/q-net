@@ -1,5 +1,4 @@
 import numpy as np
-import ipdb as pdb
 import sys
 import time
 import torch
@@ -19,7 +18,11 @@ class rNet(nn.Module):
     # Set-up parameters from config.
     self.load_from_config(config)
 
-    # Char Embedding look-up
+    # Construct the model, and store the layer in this module.
+    self.build_model()
+
+  def build_model(self):
+    # Trainable character embedding look-up.
     self.char_embedding = nn.Embedding(self.char_vocab_size, self.embed_size//2,
                                        self.char_to_index['<pad>'])
     # Embedding look-up.
@@ -41,42 +44,21 @@ class rNet(nn.Module):
       self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
                                     self.word_to_index['<pad>'])
 
-    # Passage and Question character level GRUs.
+    # Character-level pre-processing GRUs. Get character-level embeddings of words.
     self.char_gru = nn.GRU(input_size = self.embed_size//2,
                            hidden_size = self.hidden_size,
                            num_layers = 1)
 
-    #self.word_charlstm_f = nn.GRU(input_size = self.embed_size,
-    #                            hidden_size = self.hidden_size,
-    #                            num_layers = 1)
-    #self.word_charlstm_b = nn.GRU(input_size = self.embed_size,
-    #                            hidden_size = self.hidden_size,
-    #                            num_layers = 1)
-
-    # Passage and Question GRUs (matrices Hp and Hq respectively).
+    # Passage and question input dropout.
     self.p_dropout = nn.Dropout(self.dropout)
     self.q_dropout = nn.Dropout(self.dropout)
 
+    # Passage and question pre-processing GRU.
     self.preprocess_gru = nn.GRU(input_size = self.embed_size + 2*self.hidden_size,
                                  hidden_size = self.hidden_size,
                                  num_layers = 3, dropout=self.dropout)
 
-    #self.passage_lstm_f = nn.GRU(input_size = self.embed_size,
-    #                            hidden_size = self.hidden_size,
-    #                            num_layers = 3)
-    #self.question_lstm_b = nn.GRU(input_size = self.embed_size,
-    #                             hidden_size = self.hidden_size,
-    #                             num_layers = 3)
-    #self.passage_lstm_b = nn.GRU(input_size = self.embed_size,
-    #                            hidden_size = self.hidden_size,
-    #                            num_layers = 3)
-    #self.question_lstm_b = nn.GRU(input_size = self.embed_size,
-    #                             hidden_size = self.hidden_size,
-    #                             num_layers = 3)
-
-    # Attention transformations (variable names below given against those in
-    # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
-    # and answer pointer." arXiv preprint arXiv:1608.07905 (2016).)
+    # Match-LSTM Attention transformations.
     self.attend_question = nn.Linear(2*self.hidden_size, self.hidden_size, bias = False)
     self.attend_passage = nn.Linear(2*self.hidden_size, self.hidden_size, bias = False)
     self.attend_hidden = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
@@ -90,12 +72,8 @@ class rNet(nn.Module):
     # Final Match-LSTM cells (bi-directional).
     self.match_lstm = nn.LSTMCell(input_size = 4 * self.hidden_size,
                                   hidden_size = self.hidden_size)
-    #self.match_lstm_forward = nn.LSTMCell(input_size = 2 * self.hidden_size,
-    #                                      hidden_size = self.hidden_size)
-    #self.match_lstm_backward = nn.LSTMCell(input_size = 2 * self.hidden_size,
-    #                                       hidden_size = self.hidden_size)
 
-    # Self-matching module parameters.
+    # Passage self-matching module attention parameters.
     self.match_lstm_dropout = nn.Dropout(self.dropout)
     self.attend_self_passage = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
     self.attend_self_hidden = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
@@ -106,7 +84,7 @@ class rNet(nn.Module):
                                          4 * self.hidden_size,
                                          bias = False)
 
-    # Final self-matching LSTM cells (bi-directional).
+    # Final passage self-matching LSTM cells (bi-directional).
     self.self_lstm = nn.LSTMCell(input_size = 4 * self.hidden_size,
                                  hidden_size = self.hidden_size)
 
@@ -115,9 +93,11 @@ class rNet(nn.Module):
     self.attend_answer = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
     self.beta_transform = nn.Linear(self.hidden_size, 1, bias = False)
 
-    # Answer pointer LSTM.
+    # Answer pointer hidden and cell state initializations.
     self.answer_ptr_h_from_question = nn.Linear(2 * self.hidden_size, self.hidden_size)
     self.answer_ptr_c_from_question = nn.Linear(2 * self.hidden_size, self.hidden_size)
+
+    # Answer pointer LSTM.
     self.answer_dropout = nn.Dropout(self.dropout)
     self.answer_pointer_lstm = nn.LSTMCell(input_size = 2 * self.hidden_size,
                                            hidden_size = self.hidden_size)
@@ -144,23 +124,12 @@ class rNet(nn.Module):
 
   def load(self, path, epoch):
     self = torch.load(path + "/epoch_" + str(epoch) + ".pt")
-    self.passage_lstm.flatten_parameters()
-    self.question_lstm.flatten_parameters()
+    self.char_gru.flatten_parameters()
+    self.preprocess_gru.flatten_parameters()
     return self
 
   def free_memory(self):
     del self.loss
-
-  # Calls torch nn utils rnn pack_padded_sequence.
-  # For Question and Passage LSTMs.
-  # Assume that the batch is sorted in descending order.
-  def make_packed_data(self, inp, lengths):
-    return torch.nn.utils.rnn.pack_padded_sequence(inp, lengths)
-
-  # Calls torch nn utils rnn pad_packed_sequence.
-  # Returns (padded_seq, lens)
-  def make_padded_sequence(self, inp):
-    return torch.nn.utils.rnn.pad_packed_sequence(inp)
 
   def variable(self, v):
     if self.use_cuda:
@@ -198,19 +167,31 @@ class rNet(nn.Module):
         output[i][j] = self.embedding[word_id]
     return self.placeholder(output)
 
+  def get_char_level_word_embeddings(self, char_words, char_word_lens,
+                                     word_ids, max_char_word_len):
+    pass
+
+
   # Forward pass method.
+  # Char-level indices for passage words in the forward direction.
   # char_word_p_f = tuple((seq_len , batch, max_word_len), len_per_word)
+  # Char-level indices for passage words in the backward direction.
   # char_word_p_b = tuple((seq_len , batch, max_word_len), len_per_word)
+  # Char-level indices for question words in the forward direction.
   # char_word_q_f = tuple((seq_len , batch, max_word_len), len_per_word)
+  # Char-level indices for question words in the backward direction.
   # char_word_q_b = tuple((seq_len , batch, max_word_len), len_per_word)
+  # Passage words forward input.
   # passage_f = tuple((seq_len, batch), len_within_batch)
+  # Passage words backward input.
   # passage_b = tuple((seq_len, batch), len_within_batch)
+  # Question words forward input.
   # question_f = tuple((seq_len, batch), len_within_batch)
+  # Question words backward input.
   # question_b = tuple((seq_len, batch), len_within_batch)
   # answer = tuple((2, batch))
   def forward(self, char_word_p_f, char_word_p_b, char_word_q_f, char_word_q_b,
               passage_f, passage_b, question_f, question_b, answer):
-
     if not self.use_glove:
       padded_passage_f = self.placeholder(passage_f[0], False)
       padded_question_f = self.placeholder(question_f[0], False)
@@ -225,8 +206,6 @@ class rNet(nn.Module):
 
     passage_lens = passage_f[1]
     question_lens = question_b[1]
-
-    char_start = time.time()
 
     padded_char_word_q_f = self.placeholder(char_word_q_f[0], False).contiguous()
     padded_char_word_q_b = self.placeholder(char_word_q_b[0], False).contiguous()
@@ -424,7 +403,6 @@ class rNet(nn.Module):
         forward_idx = i
         backward_idx = max_passage_len-i-1
         # g{f,b}.shape = (seq_len, batch, hdim)
-        attn_start = time.time()
         gf = f.tanh(attended_question + \
                 (self.attend_passage(Hp[forward_idx]).expand_as(attended_question) + \
                  self.attend_hidden(hf)))
