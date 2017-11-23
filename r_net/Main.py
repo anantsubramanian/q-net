@@ -382,6 +382,7 @@ def train_model(args):
               answer_input)
       distributions[0] = distributions[0].data.cpu().numpy()
       distributions[1] = distributions[1].data.cpu().numpy()
+      model.free_memory()
 
       # Add all batch qids to predictions dict, if they don't already exist.
       qids = [ example[2] for example in dev_batch ]
@@ -486,6 +487,7 @@ def test_model(args):
             answer_input)
     distributions[0] = distributions[0].data.cpu().numpy()
     distributions[1] = distributions[1].data.cpu().numpy()
+    model.free_memory()
 
     # Add all batch qids to predictions dict, if they don't already exist.
     qids = [ example[2] for example in test_batch ]
