@@ -216,13 +216,13 @@ class rNet(nn.Module):
     return Hc
 
   # Reverse individual sequences and pad at end for character-level word embeddings.
-  def reverse_char_preprocessing_input(self, char_prepro_inp, max_len, lens,
+  def reverse_preprocessing_input(self, prepro_inp, max_len, lens,
                                        batch_size):
     rev = []
     for idx in range(batch_size):
       pad_len = max_len - lens[idx]
       indexes = self.variable(torch.arange(lens[idx]-1, -1, -1).long())
-      rev_idx = char_prepro_inp[:,idx,:].index_select(0, indexes)
+      rev_idx = prepro_inp[:,idx,:].index_select(0, indexes)
       if lens[idx] < max_len:
         zeros = self.variable(torch.zeros(pad_len, 2 * self.hidden_size))
         rev_idx = torch.cat((rev_idx, zeros), dim=0)
@@ -238,11 +238,16 @@ class rNet(nn.Module):
   def preprocess_inputs(self, combined_word_char_inp_f,
                         combined_word_char_inp_b, max_len, lens,
                         batch_size):
+
     Hf, _ = self.preprocess_gru(combined_word_char_inp_f,
                                 self.get_initial_gru(batch_size, 3))
     Hb, _ = self.preprocess_gru(combined_word_char_inp_b,
                                 self.get_initial_gru(batch_size, 3))
 
+    # Reverse the backward pre-processing output, before concatenating
+    # with the forward output.
+    Hb = self.reverse_preprocessing_input(Hb, max_len,
+                                          lens, batch_size)
     # H.shape = (seq_len, batch, 2 * hdim)
     H = torch.cat((Hf, Hb), dim=-1)
 
@@ -532,10 +537,10 @@ class rNet(nn.Module):
     # Character-level pre-processing inputs, in the backward direction.
     # {q,p}_c_b.shape = (seq_len, batch_size, 2 * hidden_size)
     q_c_b = \
-      self.reverse_char_preprocessing_input(q_c_f, max_question_len,
+      self.reverse_preprocessing_input(q_c_f, max_question_len,
                                             question_lens, batch_size)
     p_c_b = \
-      self.reverse_char_preprocessing_input(p_c_f, max_passage_len,
+      self.reverse_preprocessing_input(p_c_f, max_passage_len,
                                             passage_lens, batch_size)
 
     # Get word-level passage and question embeddings.
