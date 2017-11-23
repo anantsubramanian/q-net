@@ -116,6 +116,7 @@ class MatchLSTM(nn.Module):
 
   # Get an initial tuple of (h0, c0).
   # h0, c0 have dims (num_directions * num_layers, batch_size, hidden_size)
+  # If for a cell, they have dims (batch_size, hidden_size)
   def get_initial_lstm(self, batch_size, for_cell = True):
     if not for_cell:
       return (self.variable(torch.zeros(1, batch_size, self.hidden_size)),
@@ -158,7 +159,7 @@ class MatchLSTM(nn.Module):
   def match_question_passage(self, Hp, Hq, max_passage_len,
                              passage_lens, batch_size):
     # Initial hidden and cell states for forward and backward LSTMs.
-    # h{f,b}.shape = (1, batch, hdim)
+    # h{f,b}.shape = (batch, hdim)
     hf, cf = self.get_initial_lstm(batch_size)
     hb, cb = self.get_initial_lstm(batch_size)
 
@@ -236,7 +237,7 @@ class MatchLSTM(nn.Module):
     # attended_match_lstm.shape = (seq_len, batch, hdim)
     attended_match_lstm = self.attend_match_lstm(Hr)
 
-    # {h,c}a.shape = (1, batch, hdim)
+    # {h,c}a.shape = (batch, hdim)
     ha, ca = self.get_initial_lstm(batch_size)
     answer_distributions = []
     losses = []

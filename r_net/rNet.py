@@ -170,7 +170,7 @@ class rNet(nn.Module):
   # Run characters through character-level GRU after embedding lookup,
   # and return the last state of the GRU as character-level word embeddings.
   def get_char_level_word_embeddings(self, char_words, char_word_lens,
-                                     word_ids, max_char_word_len):
+                                     word_ids, max_char_word_len, batch_size):
     # Char idxs for each word in input.
     char_words = self.placeholder(char_words, False).contiguous()
 
@@ -202,9 +202,8 @@ class rNet(nn.Module):
     # Extract the last hidden state of character-level LSTM for
     # each word.
     # Hcs.shape = (total_words, hidden_size)
-    last_word_idxs = uniq_char_word_lens
     Hcs = []
-    for i, word_idx in enumerate(last_word_idxs):
+    for i, word_idx in enumerate(uniq_char_words_last_idxs):
       Hcs.append(Hc[word_idx,i,:])
 
     # Stack and get back original set of words (with duplicates).
@@ -259,7 +258,7 @@ class rNet(nn.Module):
   def match_passage_question(self, Hp, Hq, max_passage_len, passage_lens,
                              batch_size):
     # Initial hidden and cell states for forward and backward LSTMs.
-    # h{f,b}.shape = (1, batch, hdim)
+    # h{f,b}.shape = (batch, hdim)
     hf, cf = self.get_initial_lstm(batch_size)
     hb, cb = self.get_initial_lstm(batch_size)
 
@@ -338,7 +337,7 @@ class rNet(nn.Module):
   # Match the question-aware passage representation (Hr) against itself.
   def self_match_passage(self, Hr, max_passage_len, passage_lens, batch_size):
     # Initial hidden and cell states for forward and backward LSTMs.
-    # h{f,b}.shape = (1, batch, hdim)
+    # h{f,b}.shape = (batch, hdim)
     hf, cf = self.get_initial_lstm(batch_size)
     hb, cb = self.get_initial_lstm(batch_size)
 
@@ -421,16 +420,13 @@ class rNet(nn.Module):
     # Hq_last.shape = (batch, 2*hdim)
     Hq_last = []
     for idx in range(batch_size):
-      Hq_last.append(Hq[question_lens[idx],idx,:])
+      Hq_last.append(Hq[question_lens[idx]-1,idx,:])
     Hq_last = torch.stack(Hq_last, dim=0)
 
-    # {h,c}a.shape = (1, batch, hdim)
-    ha = self.answer_ptr_h_from_question(Hq_last).view(1,
-                                                       batch_size,
-                                                       self.hidden_size)
-    ca = self.answer_ptr_c_from_question(Hq_last).view(1,
-                                                       batch_size,
-                                                       self.hidden_size)
+    # {h,c}a.shape = (batch, hdim)
+    ha = self.answer_ptr_h_from_question(Hq_last)
+    ca = self.answer_ptr_c_from_question(Hq_last)
+
     # attended_self_lstm.shape = (seq_len, batch, hdim)
     attended_self_lstm = self.attend_self_lstm(Hr)
     answer_distributions = []
@@ -504,23 +500,29 @@ class rNet(nn.Module):
 
     passage_lens = passage_f[1]
     question_lens = question_b[1]
+    char_word_q_lens = char_word_q_f[1]
+    char_word_p_lens = char_word_p_b[1]
 
     # Question character-level forward and backward word embeddings.
     # char_{p,q}_{f,b}.shape = (seq_len, batch_size, hidden_size)
     char_q_f = \
       self.get_char_level_word_embeddings(char_word_q_f[0], char_word_q_lens,
-                                          q_word_ids_f, max_char_word_len_q)
+                                          question_f[0], max_char_word_len_q,
+                                          batch_size)
     char_q_b = \
       self.get_char_level_word_embeddings(char_word_q_b[0], char_word_q_lens,
-                                          q_word_ids_b, max_char_word_len_q)
+                                          question_b[0], max_char_word_len_q,
+                                          batch_size)
 
     # Passage character-level forward and backward word embeddings.
     char_p_f = \
       self.get_char_level_word_embeddings(char_word_p_f[0], char_word_p_lens,
-                                          p_word_ids_f, max_char_word_len_p)
+                                          passage_f[0], max_char_word_len_p,
+                                          batch_size)
     char_p_b = \
       self.get_char_level_word_embeddings(char_word_p_b[0], char_word_p_lens,
-                                          p_word_ids_b, max_char_word_len_p)
+                                          passage_b[0], max_char_word_len_p,
+                                          batch_size)
 
     # Character-level pre-processing inputs, in the forward direction.
     # {q,p}_c_f.shape = (seq_len, batch_size, 2 * hidden_size)
@@ -573,7 +575,7 @@ class rNet(nn.Module):
     Hr = self.match_passage_question(Hp, Hq, max_passage_len, passage_lens,
                                      batch_size)
     # Dropout output of MatchLSTM.
-    self.match_lstm_dropout(Hr)
+    Hr = self.match_lstm_dropout(Hr)
 
     # Bi-directional self-matching LSTM layer.
     Hr = self.self_match_passage(Hr, max_passage_len, passage_lens, batch_size)
@@ -581,8 +583,8 @@ class rNet(nn.Module):
     Hr = self.answer_dropout(Hr)
 
     answer_distributions, loss = \
-      point_at_answer(Hq, question_lens, batch_size, Hr, passage_lens,
-                      max_passage_len, answer)
+      self.point_at_answer(Hq, question_lens, batch_size, Hr, passage_lens,
+                           max_passage_len, answer)
 
     self.loss = loss
     return answer_distributions
