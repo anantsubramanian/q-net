@@ -8,7 +8,7 @@ import torch.nn.functional as f
 from torch.autograd import Variable
 
 class rNet(nn.Module):
-  ''' Match-LSTM model definition. Properties specified in config.'''
+  ''' R-NET model definition. Parameter dimensions specified in config.'''
 
   # Constructor
   def __init__(self, config):
@@ -58,49 +58,49 @@ class rNet(nn.Module):
                                  hidden_size = self.hidden_size,
                                  num_layers = 3, dropout=self.dropout)
 
-    # Match-LSTM Attention transformations.
+    # Match-GRU Attention transformations.
     self.attend_question = nn.Linear(2*self.hidden_size, self.hidden_size, bias = False)
     self.attend_passage = nn.Linear(2*self.hidden_size, self.hidden_size, bias = False)
     self.attend_hidden = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
     self.alpha_transform = nn.Linear(self.hidden_size, 1, bias = False)
 
-    # Attention gating for MatchLSTM.
+    # Attention gating for MatchGRU.
     self.gate_match_attention = nn.Linear(4 * self.hidden_size,
                                           4 * self.hidden_size,
                                           bias = False)
 
-    # Final Match-LSTM cells (bi-directional).
-    self.match_lstm = nn.LSTMCell(input_size = 4 * self.hidden_size,
-                                  hidden_size = self.hidden_size)
+    # Final Match-GRU cells (bi-directional).
+    self.match_gru = nn.GRUCell(input_size = 4 * self.hidden_size,
+                                hidden_size = self.hidden_size)
 
     # Passage self-matching module attention parameters.
-    self.match_lstm_dropout = nn.Dropout(self.dropout)
+    self.match_gru_dropout = nn.Dropout(self.dropout)
     self.attend_self_passage = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
     self.attend_self_hidden = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
     self.gamma_transform = nn.Linear(self.hidden_size, 1, bias = False)
 
-    # Attention gating for self-matching LSTM.
+    # Attention gating for self-matching GRU.
     self.gate_self_attention = nn.Linear(4 * self.hidden_size,
                                          4 * self.hidden_size,
                                          bias = False)
 
-    # Final passage self-matching LSTM cells (bi-directional).
-    self.self_lstm = nn.LSTMCell(input_size = 4 * self.hidden_size,
-                                 hidden_size = self.hidden_size)
+    # Final passage self-matching GRU cells (bi-directional).
+    self.self_gru = nn.GRUCell(input_size = 4 * self.hidden_size,
+                               hidden_size = self.hidden_size)
 
     # Answer pointer attention transformations.
-    self.attend_self_lstm = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
-    self.attend_answer = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
+    self.attend_self_gru = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
+    self.attend_answer = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
     self.beta_transform = nn.Linear(self.hidden_size, 1, bias = False)
 
-    # Answer pointer hidden and cell state initializations.
-    self.answer_ptr_h_from_question = nn.Linear(2 * self.hidden_size, self.hidden_size)
-    self.answer_ptr_c_from_question = nn.Linear(2 * self.hidden_size, self.hidden_size)
+    # Answer pointer hidden state initialization.
+    self.attend_question_for_ans = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
+    self.phi_transform = nn.Linear(self.hidden_size, 1, bias = False)
 
-    # Answer pointer LSTM.
+    # Answer pointer GRU.
     self.answer_dropout = nn.Dropout(self.dropout)
-    self.answer_pointer_lstm = nn.LSTMCell(input_size = 2 * self.hidden_size,
-                                           hidden_size = self.hidden_size)
+    self.answer_pointer_gru = nn.GRUCell(input_size = 2 * self.hidden_size,
+                                         hidden_size = 2 * self.hidden_size)
 
   # Load configuration options
   def load_from_config(self, config):
@@ -199,7 +199,7 @@ class rNet(nn.Module):
     Hc, _ = self.char_gru(char_word_emb,
                           self.get_initial_gru(total_words, 1))
 
-    # Extract the last hidden state of character-level LSTM for
+    # Extract the last hidden state of character-level GRU for
     # each word.
     # Hcs.shape = (total_words, hidden_size)
     Hcs = []
@@ -215,7 +215,9 @@ class rNet(nn.Module):
     Hc = Hc.view(-1, batch_size, self.hidden_size)
     return Hc
 
-  # Reverse individual sequences and pad at end for character-level word embeddings.
+  # Reverse individual sequences and pad at end.
+  # [ 1 2 3 4 5 0 0 0 ] -> [ 5 4 3 2 1 0 0 0 ]
+  # Does this along the first dimension, for 3D inputs.
   def reverse_preprocessing_input(self, prepro_inp, max_len, lens,
                                   batch_size):
     rev = []
@@ -251,7 +253,7 @@ class rNet(nn.Module):
     # H.shape = (seq_len, batch, 2 * hdim)
     H = torch.cat((Hf, Hb), dim=-1)
 
-    # Mask out padding hidden states for passage LSTM output.
+    # Mask out padding hidden states for pre-processing GRU output.
     masks = []
     for t in range(max_len):
       masks.append(np.array([ [1.0] if t < lens[i] else [0.0] \
@@ -262,10 +264,10 @@ class rNet(nn.Module):
   # Get a question-aware passage representation.
   def match_passage_question(self, Hp, Hq, max_passage_len, passage_lens,
                              batch_size):
-    # Initial hidden and cell states for forward and backward LSTMs.
+    # Initial hidden states for forward and backward GRUs.
     # h{f,b}.shape = (batch, hdim)
-    hf, cf = self.get_initial_lstm(batch_size)
-    hb, cb = self.get_initial_lstm(batch_size)
+    hf = self.get_initial_gru(batch_size, for_cell = True)
+    hb = self.get_initial_gru(batch_size, for_cell = True)
 
     # Get vectors zi for each i in passage.
     # Attended question is the same at each time step. Just compute it once.
@@ -299,7 +301,7 @@ class rNet(nn.Module):
         zf = torch.cat((Hp[forward_idx], weighted_Hq_f), dim=-1)
         zb = torch.cat((Hp[backward_idx], weighted_Hq_b), dim=-1)
 
-        # Mask vectors for {z,h,c}{f,b}.
+        # Mask vectors for {z,h}{f,b}.
         mask_f = np.array([ [1.0] if forward_idx < passage_lens[i] else [0.0] \
                               for i in range(batch_size) ])
         mask_b = np.array([ [1.0] if backward_idx < passage_lens[i] else [0.0] \
@@ -309,21 +311,19 @@ class rNet(nn.Module):
         zf = zf * mask_f
         zb = zb * mask_b
 
-        # Gating the input to the MatchLSTM.
+        # Gating the input to the MatchGRU.
         gating_f = f.sigmoid(self.gate_match_attention(zf))
         gating_b = f.sigmoid(self.gate_match_attention(zb))
         zf = zf * gating_f
         zb = zb * gating_b
 
-        # Take forward and backward LSTM steps, with zf and zb as inputs.
-        hf, cf = self.match_lstm(zf, (hf, cf))
-        hb, cb = self.match_lstm(zb, (hb, cb))
+        # Take forward and backward GRU steps, with zf and zb as inputs.
+        hf = self.match_gru(zf, hf)
+        hb = self.match_gru(zb, hb)
 
         # Back to initial zero states for padded regions.
         hf = hf * mask_f
-        cf = cf * mask_f
         hb = hb * mask_b
-        cb = cb * mask_b
 
         # Append hidden states to create Hf and Hb matrices.
         # h{f,b}.shape = (batch, hdim)
@@ -341,10 +341,10 @@ class rNet(nn.Module):
 
   # Match the question-aware passage representation (Hr) against itself.
   def self_match_passage(self, Hr, max_passage_len, passage_lens, batch_size):
-    # Initial hidden and cell states for forward and backward LSTMs.
+    # Initial hidden and cell states for forward and backward GRUs.
     # h{f,b}.shape = (batch, hdim)
-    hf, cf = self.get_initial_lstm(batch_size)
-    hb, cb = self.get_initial_lstm(batch_size)
+    hf = self.get_initial_gru(batch_size, for_cell = True)
+    hb = self.get_initial_gru(batch_size, for_cell = True)
 
     # Get vectors zi for each i in passage.
     # Attended passage is the same at each time step. Just compute it once.
@@ -376,7 +376,7 @@ class rNet(nn.Module):
         zf = torch.cat((Hr[forward_idx], weighted_Hr_f), dim=-1)
         zb = torch.cat((Hr[backward_idx], weighted_Hr_b), dim=-1)
 
-        # Mask vectors for {z,h,c}{f,b}.
+        # Mask vectors for {z,h}{f,b}.
         mask_f = np.array([ [1.0] if forward_idx < passage_lens[i] else [0.0] \
                               for i in range(batch_size) ])
         mask_b = np.array([ [1.0] if backward_idx < passage_lens[i] else [0.0] \
@@ -386,21 +386,19 @@ class rNet(nn.Module):
         zf = zf * mask_f
         zb = zb * mask_b
 
-        # Gating the input to the self-match LSTM.
+        # Gating the input to the self-match GRU.
         gating_f = f.sigmoid(self.gate_self_attention(zf))
         gating_b = f.sigmoid(self.gate_self_attention(zb))
         zf = zf * gating_f
         zb = zb * gating_b
 
-        # Take forward and backward LSTM steps, with zf and zb as inputs.
-        hf, cf = self.self_lstm(zf, (hf, cf))
-        hb, cb = self.self_lstm(zb, (hb, cb))
+        # Take forward and backward GRU steps, with zf and zb as inputs.
+        hf = self.self_gru(zf, hf)
+        hb = self.self_gru(zb, hb)
 
         # Back to initial zero states for padded regions.
         hf = hf * mask_f
-        cf = cf * mask_f
         hb = hb * mask_b
-        cb = cb * mask_b
 
         # Append hidden states to create Hf and Hb matrices.
         # h{f,b}.shape = (batch, hdim)
@@ -416,29 +414,45 @@ class rNet(nn.Module):
     Hr = torch.cat((Hf, Hb), dim=-1)
     return Hr
 
+  # Get initial state for answer pointer network using attention pooling
+  # of question representation.
+  def get_answer_ptr_init(self, Hq, question_lens, max_question_len, batch_size):
+    Rk = self.attend_question_for_ans(Hq)
+
+    # phi_k_scores.shape = (seq_len, batch, 1)
+    phi_ks = []
+    phi_k_scores = self.phi_transform(Rk)
+    for idx in range(batch_size):
+      phi_k_idx = f.softmax(phi_k_scores[:question_lens[idx],idx,:], dim=0)
+      if phi_k_idx.shape[0] < max_question_len:
+        diff = max_question_len - phi_k_idx.shape[0]
+        zeros = self.variable(torch.zeros((diff, 1)))
+        phi_k_idx = torch.cat((phi_k_idx, zeros), dim=0)
+      # phi_k_idx.shape = (max_seq_len, 1)
+      phi_ks.append(phi_k_idx)
+
+    # phi_k.shape = (seq_len, batch, 1)
+    phi_k = torch.stack(phi_ks, dim=1)
+
+    # shape = (batch, 2*hdim)
+    return torch.squeeze(torch.bmm(phi_k.permute(1, 2, 0),
+                                   torch.transpose(Hq, 0, 1)), dim=1)
+
+
   # Answer pointer network that returns distributions over the answer start
   # and end indexes. Additionally returns the loss for training.
-  def point_at_answer(self, Hq, question_lens, batch_size, Hr, passage_lens,
-                      max_passage_len, answer):
-    # Get last layer of question representation to initialize answer pointer
-    # network LSTM hidden and cell states.
-    # Hq_last.shape = (batch, 2*hdim)
-    Hq_last = []
-    for idx in range(batch_size):
-      Hq_last.append(Hq[question_lens[idx]-1,idx,:])
-    Hq_last = torch.stack(Hq_last, dim=0)
+  def point_at_answer(self, Hq, question_lens, max_question_len, batch_size,
+                      Hr, passage_lens, max_passage_len, answer):
+    # ha.shape = (batch, 2*hdim)
+    ha = self.get_answer_ptr_init(Hq, question_lens, max_question_len, batch_size)
 
-    # {h,c}a.shape = (batch, hdim)
-    ha = self.answer_ptr_h_from_question(Hq_last)
-    ca = self.answer_ptr_c_from_question(Hq_last)
-
-    # attended_self_lstm.shape = (seq_len, batch, hdim)
-    attended_self_lstm = self.attend_self_lstm(Hr)
+    # attended_self_gru.shape = (seq_len, batch, hdim)
+    attended_self_gru = self.attend_self_gru(Hr)
     answer_distributions = []
     losses = []
     for k in range(2):
       # Fk.shape = (seq_len, batch, hdim)
-      Fk = f.tanh(attended_self_lstm + self.attend_answer(ha))
+      Fk = f.tanh(attended_self_gru + self.attend_answer(ha))
 
       # beta_k_scores.shape = (seq_len, batch, 1)
       beta_ks = []
@@ -463,8 +477,8 @@ class rNet(nn.Module):
       weighted_Hr = torch.squeeze(torch.bmm(beta_k.permute(1, 2, 0),
                                   torch.transpose(Hr, 0, 1)), dim=1)
 
-      # LSTM step.
-      ha, ca = self.answer_pointer_lstm(weighted_Hr, (ha, ca))
+      # GRU step.
+      ha = self.answer_pointer_gru(weighted_Hr, ha)
 
     # Compute the loss.
     loss = sum(losses)/batch_size
@@ -576,20 +590,20 @@ class rNet(nn.Module):
     Hq = self.preprocess_inputs(q_combined_f, q_combined_b, max_question_len,
                                 question_lens, batch_size)
 
-    # Bi-directional match-LSTM layer.
+    # Bi-directional match-GRU layer.
     Hr = self.match_passage_question(Hp, Hq, max_passage_len, passage_lens,
                                      batch_size)
-    # Dropout output of MatchLSTM.
-    Hr = self.match_lstm_dropout(Hr)
+    # Dropout output of MatchGRU.
+    Hr = self.match_gru_dropout(Hr)
 
-    # Bi-directional self-matching LSTM layer.
+    # Bi-directional self-matching GRU layer.
     Hr = self.self_match_passage(Hr, max_passage_len, passage_lens, batch_size)
     # Passage self-matching dropout.
     Hr = self.answer_dropout(Hr)
 
     answer_distributions, loss = \
-      self.point_at_answer(Hq, question_lens, batch_size, Hr, passage_lens,
-                           max_passage_len, answer)
+      self.point_at_answer(Hq, question_lens, max_question_len, batch_size, Hr,
+                           passage_lens, max_passage_len, answer)
 
     self.loss = loss
     return answer_distributions
