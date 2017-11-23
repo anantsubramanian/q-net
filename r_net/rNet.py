@@ -217,18 +217,18 @@ class rNet(nn.Module):
 
   # Reverse individual sequences and pad at end for character-level word embeddings.
   def reverse_preprocessing_input(self, prepro_inp, max_len, lens,
-                                       batch_size):
+                                  batch_size):
     rev = []
     for idx in range(batch_size):
       pad_len = max_len - lens[idx]
       indexes = self.variable(torch.arange(lens[idx]-1, -1, -1).long())
       rev_idx = prepro_inp[:,idx,:].index_select(0, indexes)
       if lens[idx] < max_len:
-        zeros = self.variable(torch.zeros(pad_len, 2 * self.hidden_size))
+        zeros = self.variable(torch.zeros(pad_len, prepro_inp.shape[2]))
         rev_idx = torch.cat((rev_idx, zeros), dim=0)
       rev.append(rev_idx)
 
-    # rev.shape = (seq_len, batch_size, 2 * hidden_size)
+    # rev.shape = (seq_len, batch_size, prepro_inp.shape[2])
     rev = torch.stack(rev, dim=1)
     return rev
 
@@ -295,7 +295,7 @@ class rNet(nn.Module):
         weighted_Hq_b = torch.squeeze(torch.bmm(alpha_b.permute(1, 2, 0),
                                       torch.transpose(Hq, 0, 1)), dim=1)
 
-        # z{f,b}.shape = (batch, 2 * hdim)
+        # z{f,b}.shape = (batch, 4 * hdim)
         zf = torch.cat((Hp[forward_idx], weighted_Hq_f), dim=-1)
         zb = torch.cat((Hp[backward_idx], weighted_Hq_b), dim=-1)
 
@@ -393,8 +393,8 @@ class rNet(nn.Module):
         zb = zb * gating_b
 
         # Take forward and backward LSTM steps, with zf and zb as inputs.
-        hf, cf = self.match_lstm(zf, (hf, cf))
-        hb, cb = self.match_lstm(zb, (hb, cb))
+        hf, cf = self.self_lstm(zf, (hf, cf))
+        hb, cb = self.self_lstm(zb, (hb, cb))
 
         # Back to initial zero states for padded regions.
         hf = hf * mask_f
