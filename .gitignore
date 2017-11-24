@@ -3,3 +3,4 @@ checkpoint
 *.ckpt.*
 logs
 *.json
+*.swp

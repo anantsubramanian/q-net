@@ -1,4 +1,5 @@
 import argparse
+import cPickle as pickle
 import json
 import numpy as np
 import os
@@ -32,6 +33,7 @@ def init_parser():
   parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt')
   parser.add_argument('--disable_glove', action='store_true')
   parser.add_argument('--ckpt', type=int, default=0)
+  parser.add_argument('--model_file')
   parser.add_argument('--epochs', type=int, default=25)
   parser.add_argument('--model_dir', default='./')
   parser.add_argument('--batch_size', type=int, default=32)
@@ -41,6 +43,7 @@ def init_parser():
   parser.add_argument('--dropout', type=float, default=0.4)
   parser.add_argument('--cuda', action='store_true')
   parser.add_argument('--max_answer_span', type=int, default=15)
+  parser.add_argument('--use_greedy', action='store_true')
   return parser
 
 
@@ -158,6 +161,10 @@ def train_model(args):
     print "Loaded model."
     if not args.disable_glove:
       print "Embedding shape:", model.embedding.shape
+
+  if args.model_file is not None:
+    model = model.load_from_file(args.model_file)
+    print "Loaded model from %s." % args.model_file
 
   start_time = time.time()
   print "Starting training."
@@ -333,15 +340,21 @@ def test_model(args):
   print(model)
 
   #------------------------- Reload and test model ----------------------------#
-  last_done_epoch = config['ckpt']
-  model = model.load(args.model_dir, last_done_epoch)
-  print "Loaded model."
-  if not args.disable_glove:
-    print "Embedding shape:", model.embedding.shape
+  if args.model_file is not None:
+    model = model.load_from_file(args.model_file)
+    print "Loaded model from %s." % args.model_file
+  else:
+    last_done_epoch = config['ckpt']
+    model = model.load(args.model_dir, last_done_epoch)
+    print "Loaded model."
+    if not args.disable_glove:
+      print "Embedding shape:", model.embedding.shape
 
   test_start_t = time.time()
   test_loss_sum = 0.0
   all_predictions = {}
+  attention_starts = {}
+  attention_ends = {}
   model.eval()
 
   for i, num in enumerate(test_order):
@@ -350,6 +363,7 @@ def test_model(args):
           len(test_order)),
 
     test_batch = test[num:num+test_batch_size]
+    batch_size = len(test_batch)
 
     # Variable length question, answer and paragraph sequences for batch.
     ques_lens_in = [ len(example[0]) for example in test_batch ]
@@ -382,19 +396,30 @@ def test_model(args):
       if not qid in all_predictions:
         all_predictions[qid] = []
     
-    best_idxs = []
-    for idx in range(len(test_batch)):
-      best_prob = -1
-      best = [0, 0]
-      max_end = paras_lens_in[idx]
-      for j, start_prob in enumerate(distributions[0][idx][:max_end]):
-        cur_end_idx = min(j + args.max_answer_span, max_end)
-        end_idx = np.argmax(distributions[1][idx][j:cur_end_idx])
-        prob = distributions[1][idx][j+end_idx] * start_prob
-        if prob > best_prob:
-          best_prob = prob
-          best = [j, j+end_idx]
-      best_idxs.append(best)
+    # Search, or be greedy?
+    if not args.use_greedy:
+      best_idxs = []
+      for idx in range(len(test_batch)):
+        best_prob = -1
+        best = [0, 0]
+        max_end = paras_lens_in[idx]
+        for j, start_prob in enumerate(distributions[0][idx][:max_end]):
+          cur_end_idx = max_end if args.max_answer_span == -1 \
+                                else j + args.max_answer_span
+          end_idx = np.argmax(distributions[1][idx][j:cur_end_idx])
+          prob = distributions[1][idx][j+end_idx] * start_prob
+          if prob > best_prob:
+            best_prob = prob
+            best = [j, j+end_idx]
+        best_idxs.append(best)
+    else:
+      best_idxs = []
+      for idx in range(len(test_batch)):
+        start = np.argmax(distributions[0][idx])
+        end_idx = paras_lens_in[idx] if args.max_answer_span == -1 \
+                                     else start + args.max_answer_span
+        end = np.argmax(distributions[1][idx][start:end_idx])
+        best_idxs.append([start, start+end])
 
     tokenized_paras = test_data.tokenized_paras
     answers = [ tokenized_paras[test_ques_to_para[qids[idx]]][start:end+1] \
@@ -404,6 +429,17 @@ def test_model(args):
 
     for qid, answer in zip(qids, answers):
       all_predictions[qid] = answer
+
+    # Dump start and end attention distributions.
+    for idx in range(batch_size):
+      if qids[idx] in attention_starts:
+        attention_starts[qids[idx]][1].append(ans_in[0][idx])
+      else:
+        attention_starts[qids[idx]] = (distributions[0][idx], [ans_in[0][idx]])
+      if qids[idx] in attention_ends:
+        attention_ends[qids[idx]][1].append(ans_in[0][idx])
+      else:
+        attention_ends[qids[idx]] = (distributions[1][idx], [ans_in[1][idx]])
 
     test_loss_sum += model.loss.data[0]
     print "[Average loss : %.5f]" % (test_loss_sum/(i+1)),
@@ -416,6 +452,12 @@ def test_model(args):
   # Dump the results json in the required format
   print "Dumping prediction results."
   json.dump(all_predictions, open(args.predictions_output_json, "w"))
+
+  # Dump attention start and end distributions.
+  pickle.dump(attention_starts,
+              open(args.predictions_output_json + "_starts.p", "wb"))
+  pickle.dump(attention_ends,
+              open(args.predictions_output_json + "_ends.p", "wb"))
   print "Done."
 #------------------------------------------------------------------------------#
 

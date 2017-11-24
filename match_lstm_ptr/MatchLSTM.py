@@ -88,8 +88,10 @@ class MatchLSTM(nn.Module):
 
   def load(self, path, epoch):
     self = torch.load(path + "/epoch_" + str(epoch) + ".pt")
-    self.passage_lstm.flatten_parameters()
-    self.question_lstm.flatten_parameters()
+    return self
+
+  def load_from_file(self, path):
+    self = torch.load(path)
     return self
 
   # Calls torch nn utils rnn pack_padded_sequence.
