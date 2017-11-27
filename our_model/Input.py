@@ -1,4 +1,5 @@
 import cPickle as pickle
+import gzip
 import json
 import numpy
 import string
@@ -79,12 +80,12 @@ class Data:
     del self.data
 
   def dump_pickle(self, filename):
-    with open(filename, 'wb') as fout:
+    with gzip.open(filename + ".gz", 'wb') as fout:
       pickle.dump(self, fout)
       fout.close()
 
   def read_from_pickle(self, filename):
-    with open(filename, 'rb') as fin:
+    with gzip.open(filename + ".gz", 'rb') as fin:
       self = pickle.load(fin)
       fin.close()
       return self
@@ -99,7 +100,6 @@ class Data:
     joined_para = []
     map(joined_para.extend, tokenized_para)
 
-    
     sentences = len(tokenized_para)
     if sentences == 0:
       print "Found no sentences for para:", para_text
@@ -112,6 +112,20 @@ class Data:
     tokenized_para = [ self.dictionary.add_or_get_index(word) \
                          for word in word_tokenize(para_text) ]
     return tokenized_para
+
+  def f1_score(self, start, end, ans_start_idx, ans_end_idx):
+    # Get the F1 score for two given ranges: candidate range and true range.
+    if end < start:
+      return 0.0
+    intersection = min(end, ans_end_idx) - max(start, ans_start_idx)
+    if intersection < 0:
+      return 0.0
+    intersection += 1
+    true = ans_end_idx - ans_start_idx + 1
+    ours = end - start + 1
+    precision = intersection/float(ours)
+    recall = intersection/float(true)
+    return 2 * precision * recall / (precision + recall)
 
   def add_paragraph(self, paragraph):
     para_text = paragraph['context']
@@ -162,9 +176,15 @@ class Data:
 
         processed_answers.append(answer_idxs)
 
+
       # Create question-answer pairs
       for processed_answer in processed_answers:
-        self.data.append([processed_question, processed_answer, qa['id']])
+        f1_partial_matrix = numpy.zeros((processed_answer[1]+1, len(tokenized_para)-processed_answer[0]))
+        for start in range(0,processed_answer[1]+1):
+          for end in range(max(start,processed_answer[0]),len(tokenized_para)):
+            f1_partial_matrix[start, end-processed_answer[0]] = \
+              self.f1_score(start, end, processed_answer[0], processed_answer[1])
+        self.data.append([processed_question, processed_answer, qa['id'], f1_partial_matrix])
 
     # Store paragraph text
     self.paragraphs.append(para_text)
@@ -195,10 +215,17 @@ class Data:
 
 # Pad a given sequence upto length "length" with the given "element".
 def pad(seq, element, length):
-    assert len(seq) <= length
-    padded_seq = seq + [element] * (length - len(seq))
-    assert len(padded_seq) == length
-    return padded_seq
+  assert len(seq) <= length
+  padded_seq = seq + [element] * (length - len(seq))
+  assert len(padded_seq) == length
+  return padded_seq
+
+# Create a 2D numpy array of shape "length"x"length" with the given values set,
+# and rest set to element.
+def create2d(partial_matrix, element, length, ans_start):
+  padded_mat = numpy.zeros((length, length))
+  padded_mat[:partial_matrix.shape[0], ans_start:ans_start+partial_matrix.shape[1]] = partial_matrix
+  return padded_mat
 
 # Read train and dev data, either from json files or from pickles, and dump them in
 # pickles if necessary.

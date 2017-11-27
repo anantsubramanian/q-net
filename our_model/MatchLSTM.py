@@ -254,11 +254,13 @@ class MatchLSTM(nn.Module):
     Hr = torch.cat((Hf, Hb), dim=-1)
     return Hr
 
+
   # Boundary pointer model, that gives probability distributions over the
   # answer start and answer end indices. Additionally returns the loss
   # for training.
   def answer_pointer(self, Hr, Hp, Hq, max_question_len, question_lens,
-                     max_passage_len, passage_lens, batch_size, answer):
+                     max_passage_len, passage_lens, batch_size, answer,
+                     f1_matrices):
     # attended_match_lstm[_b].shape = (seq_len, batch, 2*hdim)
     attended_match_lstm = self.attend_match_lstm(Hr)
     attended_match_lstm_b = self.attend_match_lstm_b(Hr)
@@ -275,7 +277,6 @@ class MatchLSTM(nn.Module):
 
     answer_distributions = []
     answer_distributions_b = []
-    losses = []
 
     # Two three-step LSTMs: Point to the start of the answer first, then the end,
     # and point to the answer end, then the start.
@@ -305,10 +306,6 @@ class MatchLSTM(nn.Module):
         # beta_k[_b]_idx.shape = (max_seq_len, 1)
         beta_ks.append(beta_k_idx)
         beta_k_bs.append(beta_k_b_idx)
-        if(k > 0):
-          t_k = k-1
-          losses.append(-torch.log(torch.squeeze(beta_k_idx[answer[t_k][idx]])))
-          losses.append(-torch.log(torch.squeeze(beta_k_b_idx[answer[1-t_k][idx]])))
 
       # beta_k.shape = (seq_len, batch, 1)
       beta_k = torch.stack(beta_ks, dim=1)
@@ -334,14 +331,24 @@ class MatchLSTM(nn.Module):
       hb, cb = self.answer_pointer_lstm(ab, (hb, cb))
 
     # Compute the loss.
-    loss = sum(losses)/batch_size
+    loss_f = -torch.log(
+                1 - (torch.bmm(torch.unsqueeze(answer_distributions[0], -1),
+                              torch.unsqueeze(answer_distributions[1], 1)) * \
+		     (1 - f1_matrices)).view(batch_size, -1).sum(1)).sum()
+    loss_b = -torch.log(
+                1 - (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
+                              torch.unsqueeze(answer_distributions_b[0], 1)) * \
+		     (1 - f1_matrices)).view(batch_size, -1).sum(1)).sum()
+    loss = loss_f + loss_b
+    loss /= batch_size
     return answer_distributions, answer_distributions_b, loss
 
   # Forward pass method.
   # passage = tuple((seq_len, batch), len_within_batch)
   # question = tuple((seq_len, batch), len_within_batch)
   # answer = tuple((2, batch))
-  def forward(self, passage, question, answer):
+  # f1_matrices = (batch, seq_len, seq_len)
+  def forward(self, passage, question, answer, f1_matrices):
     if not self.use_glove:
       padded_passage = self.placeholder(passage[0], False)
       padded_question = self.placeholder(question[0], False)
@@ -350,6 +357,7 @@ class MatchLSTM(nn.Module):
     max_question_len = question[0].shape[0]
     passage_lens = passage[1]
     question_lens = question[1]
+    f1_mat = self.placeholder(f1_matrices)
 
     # Get embedded passage and question representations.
     if not self.use_glove:
@@ -379,7 +387,8 @@ class MatchLSTM(nn.Module):
     # and the loss for training.
     answer_distributions, answer_distributions_b, loss = \
       self.answer_pointer(Hr, Hp, Hq, max_question_len, question_lens,
-                          max_passage_len, passage_lens, batch_size, answer)
+                          max_passage_len, passage_lens, batch_size, answer,
+                          f1_mat)
 
     self.loss = loss
     return answer_distributions, answer_distributions_b

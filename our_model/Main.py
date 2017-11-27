@@ -12,7 +12,7 @@ import torch.nn as nn
 from operator import itemgetter
 from torch.autograd import Variable
 from torch.optim import SGD, Adamax
-from Input import Dictionary, Data, pad, read_data
+from Input import Dictionary, Data, pad, read_data, create2d
 from MatchLSTM import MatchLSTM
 
 def init_parser():
@@ -73,7 +73,7 @@ def read_and_process_data(args):
   train_tokenized_paras = train_data.tokenized_paras
   dev_tokenized_paras = dev_data.tokenized_paras
   test_tokenized_paras = dev_data.tokenized_paras
-  
+
   # Sort data by increasing question+answer length, for efficient batching.
   # Data format = (tokenized_question, tokenized_answer, question_id).
   print "Sorting datasets in decreasing order of (para + question) lengths."
@@ -148,7 +148,7 @@ def train_model(args):
   dev_ques_to_para, test_ques_to_para, train_tokenized_paras,\
   dev_tokenized_paras, test_tokenized_paras, train_order, dev_order, test_order,\
   train_data, dev_data, test_data = read_and_process_data(args)
-    
+
   # Build model
   model, config = build_model(args, train_data.dictionary.size(),
                               train_data.dictionary.index_to_word,
@@ -211,6 +211,10 @@ def train_model(args):
 
       # ans_in.shape = (2, batch)
       ans_in = np.array([ example[1] for example in train_batch ]).T
+
+      # f1_mat_in.shape = (batch, seq_len, seq_len)
+      f1_mat_in = np.array([ create2d(example[3], 0, max_para_len, example[1][0]) \
+                               for example in train_batch])
       # Fixed-length (padded) input sequences with shape=(seq_len, batch).
       ques_in = np.array([ pad(example[0], 0, max_ques_len)\
                              for example in train_batch ]).T
@@ -222,7 +226,7 @@ def train_model(args):
 
       # Zero previous gradient.
       model.zero_grad()
-      model(passage_input, question_input, answer_input)
+      model(passage_input, question_input, answer_input, f1_mat_in)
       model.loss.backward()
       optimizer.step()
       train_loss_sum += model.loss.data[0]
@@ -271,6 +275,10 @@ def train_model(args):
       # ans_in.shape = (2, batch)
       ans_in = np.array([ example[1] for example in dev_batch ]).T
 
+      # f1_mat_in.shape = (batch, seq_len, seq_len)
+      f1_mat_in = np.array([ create2d(example[3], 0, max_para_len, example[1][0]) \
+                               for example in dev_batch])
+
       # Fixed-length (padded) input sequences with shape=(seq_len, batch).
       ques_in = np.array([ pad(example[0], 0, max_ques_len)\
                              for example in dev_batch ]).T
@@ -281,7 +289,7 @@ def train_model(args):
       answer_input = ans_in
 
       # distributions[{0,1}].shape = (batch, max_passage_len)
-      distributions, distributions_b = model(passage_input, question_input, answer_input)
+      distributions, distributions_b = model(passage_input, question_input, answer_input, f1_mat_in)
       distributions[0] = distributions[0].data.cpu().numpy()
       distributions[1] = distributions[1].data.cpu().numpy()
       distributions_b[0] = distributions_b[0].data.cpu().numpy()
@@ -292,7 +300,7 @@ def train_model(args):
       for qid in qids:
         if not qid in all_predictions:
           all_predictions[qid] = []
-      
+
       best_idxs = []
       for idx in range(len(dev_batch)):
         best_prob = -1
@@ -342,7 +350,7 @@ def test_model(args):
   dev_ques_to_para, test_ques_to_para, train_tokenized_paras,\
   dev_tokenized_paras, test_tokenized_paras, train_order, dev_order, test_order,\
   train_data, dev_data, test_data = read_and_process_data(args)
-    
+
   # Build model
   model, config = build_model(args, train_data.dictionary.size(),
                               train_data.dictionary.index_to_word,
@@ -386,6 +394,10 @@ def test_model(args):
     # ans_in.shape = (2, batch)
     ans_in = np.array([ example[1] for example in test_batch ]).T
 
+    # f1_mat_in.shape = (batch, seq_len, seq_len)
+    f1_mat_in = np.array([ create2d(example[3], 0, max_para_len, example[1][0]) \
+                             for example in test_batch])
+
     # Fixed-length (padded) input sequences with shape=(seq_len, batch).
     ques_in = np.array([ pad(example[0], 0, max_ques_len)\
                            for example in test_batch ]).T
@@ -396,7 +408,7 @@ def test_model(args):
     answer_input = ans_in
 
     # distributions[{0,1}].shape = (batch, max_passage_len)
-    distributions, distributions_b = model(passage_input, question_input, answer_input)
+    distributions, distributions_b = model(passage_input, question_input, answer_input, f1_mat_in)
     distributions[0] = distributions[0].data.cpu().numpy()
     distributions[1] = distributions[1].data.cpu().numpy()
     distributions_b[0] = distributions_b[0].data.cpu().numpy()
@@ -407,7 +419,7 @@ def test_model(args):
     for qid in qids:
       if not qid in all_predictions:
         all_predictions[qid] = []
-    
+
     # Search, or be greedy?
     if not args.use_greedy:
       best_idxs = []
