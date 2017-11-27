@@ -44,6 +44,7 @@ def init_parser():
   parser.add_argument('--cuda', action='store_true')
   parser.add_argument('--max_answer_span', type=int, default=15)
   parser.add_argument('--use_greedy', action='store_true')
+  parser.add_argument('--model_description')
   return parser
 
 
@@ -476,6 +477,8 @@ def test_model(args):
 
 if __name__ == "__main__":
   args = init_parser().parse_args()
+  assert args.model_description is not None, "Model description must be provided."
+  print args.model_description
   if args.run_type == "train":
     train_model(args)
   elif args.run_type == "test":
