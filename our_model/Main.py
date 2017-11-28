@@ -28,7 +28,7 @@ def init_parser():
   parser.add_argument('--max_dev_articles', type=int, default=-1)
   parser.add_argument('--embed_size', type=int, default=300)
   parser.add_argument('--hidden_size', type=int, default=150)
-  parser.add_argument('--learning_rate', type=float, default=0.002)
+  parser.add_argument('--learning_rate', type=float, default=0.005)
   parser.add_argument('--decay_rate', type=float, default=0.95)
   parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt')
   parser.add_argument('--disable_glove', action='store_true')

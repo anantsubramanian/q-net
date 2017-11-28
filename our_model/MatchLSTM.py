@@ -85,7 +85,7 @@ class MatchLSTM(nn.Module):
                                          self.hidden_size * 2, bias = False)
     self.attend_answer = nn.Linear(self.hidden_size * 2, self.hidden_size * 2)
     self.beta_transform = nn.Linear(self.hidden_size * 2, 1)
-    self.dropout_ptr = nn.Dropout(self.dropout/2)
+    self.dropout_ptr = nn.Dropout(self.dropout)
 
     # Answer pointer LSTM.
     self.answer_pointer_lstm = nn.LSTMCell(input_size = self.hidden_size * 4,
@@ -332,13 +332,13 @@ class MatchLSTM(nn.Module):
 
     # Compute the loss.
     loss_f = -torch.log(
-                1 - (torch.bmm(torch.unsqueeze(answer_distributions[0], -1),
-                              torch.unsqueeze(answer_distributions[1], 1)) * \
-		     (1 - f1_matrices)).view(batch_size, -1).sum(1)).sum()
+                (torch.bmm(torch.unsqueeze(answer_distributions[0], -1),
+                          torch.unsqueeze(answer_distributions[1], 1)) * \
+		             f1_matrices).view(batch_size, -1).sum(1)).sum()
     loss_b = -torch.log(
-                1 - (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
-                              torch.unsqueeze(answer_distributions_b[0], 1)) * \
-		     (1 - f1_matrices)).view(batch_size, -1).sum(1)).sum()
+                (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
+                           torch.unsqueeze(answer_distributions_b[0], 1)) * \
+		             f1_matrices).view(batch_size, -1).sum(1)).sum()
     loss = loss_f + loss_b
     loss /= batch_size
     return answer_distributions, answer_distributions_b, loss
