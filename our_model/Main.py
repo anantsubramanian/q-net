@@ -308,7 +308,8 @@ def train_model(args):
         max_end = paras_lens_in[idx]
         for j, start_prob in enumerate(distributions[0][idx][:max_end]):
           cur_end_idx = min(j + args.max_answer_span, max_end)
-          end_idx = np.argmax(distributions[1][idx][j:cur_end_idx])
+          end_idx = np.argmax(distributions[1][idx][j:cur_end_idx] * \
+                              distributions_b[0][idx][j:cur_end_idx])
           prob = distributions[1][idx][j+end_idx] * start_prob \
                  * distributions_b[1][idx][j] * distributions_b[0][idx][j+end_idx]
           if prob > best_prob:
@@ -430,7 +431,8 @@ def test_model(args):
         for j, start_prob in enumerate(distributions[0][idx][:max_end]):
           cur_end_idx = max_end if args.max_answer_span == -1 \
                                 else j + args.max_answer_span
-          end_idx = np.argmax(distributions[1][idx][j:cur_end_idx])
+          end_idx = np.argmax(distributions[1][idx][j:cur_end_idx] * \
+                              distributions_b[0][idx][j:cur_end_idx])
           prob = distributions[1][idx][j+end_idx] * start_prob \
                  * distributions_b[1][idx][j] * distributions_b[0][idx][j+end_idx]
           if prob > best_prob:
@@ -443,7 +445,8 @@ def test_model(args):
         start = np.argmax(distributions[0][idx])
         end_idx = paras_lens_in[idx] if args.max_answer_span == -1 \
                                      else start + args.max_answer_span
-        end = np.argmax(distributions[1][idx][start:end_idx])
+        end = np.argmax(distributions[1][idx][start:end_idx] * \
+                        distributions_b[0][idx][j:cur_end_idx])
         best_idxs.append([start, start+end])
 
     tokenized_paras = test_data.tokenized_paras

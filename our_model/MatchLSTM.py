@@ -277,6 +277,7 @@ class MatchLSTM(nn.Module):
 
     answer_distributions = []
     answer_distributions_b = []
+    mle_losses = []
 
     # Two three-step LSTMs: Point to the start of the answer first, then the end,
     # and point to the answer end, then the start.
@@ -306,6 +307,11 @@ class MatchLSTM(nn.Module):
         # beta_k[_b]_idx.shape = (max_seq_len, 1)
         beta_ks.append(beta_k_idx)
         beta_k_bs.append(beta_k_b_idx)
+
+        if k > 0:
+					t_k = k-1
+					mle_losses.append(-torch.log(torch.squeeze(beta_k_idx[answer[t_k][idx]])))
+					mle_losses.append(-torch.log(torch.squeeze(beta_k_b_idx[answer[1-t_k][idx]])))
 
       # beta_k.shape = (seq_len, batch, 1)
       beta_k = torch.stack(beta_ks, dim=1)
@@ -339,7 +345,7 @@ class MatchLSTM(nn.Module):
                 (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
                            torch.unsqueeze(answer_distributions_b[0], 1)) * \
 		             f1_matrices).view(batch_size, -1).sum(1)).sum()
-    loss = loss_f + loss_b
+    loss = loss_f + loss_b + sum(mle_losses)
     loss /= batch_size
     return answer_distributions, answer_distributions_b, loss
 
