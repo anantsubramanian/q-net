@@ -44,6 +44,7 @@ def init_parser():
   parser.add_argument('--cuda', action='store_true')
   parser.add_argument('--max_answer_span', type=int, default=15)
   parser.add_argument('--use_greedy', action='store_true')
+  parser.add_argument('--f1_loss_ratio', type=float, default=0.75)
   parser.add_argument('--model_description')
   return parser
 
@@ -111,6 +112,7 @@ def read_and_process_data(args):
 
 #------------------------------ Create model ----------------------------------#
 def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
+  assert args.f1_loss_ratio <= 1.0, "F1 loss ratio must be less than 1.0"
   config = { 'embed_size' : args.embed_size,
              'vocab_size' : vocab_size,
              'hidden_size' : args.hidden_size,
@@ -124,7 +126,8 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
              'index_to_word': index_to_word,
              'word_to_index': word_to_index,
              'cuda': args.cuda,
-             'num_pos_tags': num_pos_tags }
+             'num_pos_tags': num_pos_tags,
+             'f1_loss_ratio': args.f1_loss_ratio }
   print "Building model."
   model = MatchLSTM(config)
   print "Done!"

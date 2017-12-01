@@ -34,6 +34,7 @@ class MatchLSTM(nn.Module):
     self.use_cuda = config['cuda']
     self.dropout = config['dropout']
     self.num_pos_tags = config['num_pos_tags']
+    self.f1_loss_ratio = config['f1_loss_ratio']
 
   def build_model(self):
     # Embedding look-up.
@@ -348,7 +349,8 @@ class MatchLSTM(nn.Module):
                 (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
                            torch.unsqueeze(answer_distributions_b[0], 1)) * \
 		             f1_matrices).view(batch_size, -1).sum(1)).sum()
-    loss = loss_f + loss_b + sum(mle_losses)
+    loss = self.f1_loss_ratio * (loss_f + loss_b) + \
+           (1 - self.f1_loss_ratio) * sum(mle_losses)
     loss /= batch_size
     return answer_distributions, answer_distributions_b, loss
 
