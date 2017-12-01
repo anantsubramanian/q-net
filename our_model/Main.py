@@ -356,7 +356,7 @@ def train_model(args):
 
       # Add predictions to all answers.
       get_batch_answers(args, dev_batch, all_predictions, distributions,
-                        distributions_b, data)
+                        distributions_b, dev_data)
 
       dev_loss_sum += model.loss.data[0]
       print "[Average loss : %.5f]" % (dev_loss_sum/(i+1)),
@@ -428,8 +428,8 @@ def test_model(args):
     distributions_b[1] = distributions_b[1].data.cpu().numpy()
 
     # Add predictions to all answers.
-    get_batch_answers(args, dev_batch, all_predictions, distributions,
-                      distributions_b, data)
+    get_batch_answers(args, test_batch, all_predictions, distributions,
+                      distributions_b, test_data)
 
     # Dump start and end attention distributions.
     for idx in range(batch_size):
