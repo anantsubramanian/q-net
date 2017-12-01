@@ -6,6 +6,7 @@ import string
 import sys
 
 from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk import pos_tag
 
 class Dictionary:
   def __init__(self, lowercase=True, remove_punctuation=True,
@@ -18,6 +19,7 @@ class Dictionary:
     self.answer_start = answer_start
     self.answer_end = answer_end
     self.pad_index = self.add_or_get_index('<pad>')
+    self.pos_tags = dict()
 
   def size(self):
     return len(self.index_to_word)
@@ -39,6 +41,12 @@ class Dictionary:
     self.word_to_index[word] = new_index
     self.index_to_word.append(word)
     return new_index
+
+  def add_or_get_tag(self, tag):
+    if tag in self.pos_tags:
+      return self.pos_tags[tag]
+    self.pos_tags[tag] = len(self.pos_tags)
+    return self.pos_tags[tag]
 
   def get_index(self, word):
     if word == self.answer_start or word == self.answer_end:
@@ -68,6 +76,7 @@ class Data:
     self.questions = {}
     self.paragraphs = []
     self.tokenized_paras = []
+    self.paras_tags = []
     self.question_to_paragraph = {}
     self.data = []
     self.missed = 0
@@ -109,9 +118,10 @@ class Data:
 
   def word_tokenize_para(self, para_text):
     # Create tokenized paragraph representation.
+    tokenized_para_words = word_tokenize(para_text)
     tokenized_para = [ self.dictionary.add_or_get_index(word) \
-                         for word in word_tokenize(para_text) ]
-    return tokenized_para
+                         for word in tokenized_para_words ]
+    return tokenized_para, tokenized_para_words
 
   def f1_score(self, start, end, ans_start_idx, ans_end_idx):
     # Get the F1 score for two given ranges: candidate range and true range.
@@ -132,8 +142,11 @@ class Data:
     para_qas = paragraph['qas']
 
     # Store tokenized paragraph.
-    tokenized_para = self.word_tokenize_para(para_text)
+    tokenized_para, tokenized_para_words = self.word_tokenize_para(para_text)
     self.tokenized_paras.append(tokenized_para)
+    _, para_tags = zip(*pos_tag(tokenized_para_words))
+    para_tags = [ self.dictionary.add_or_get_tag(tag) for tag in para_tags ]
+    self.paras_tags.append(para_tags)
 
     for qa in para_qas:
       # Questions of length <= 2 words are ignored
@@ -143,9 +156,12 @@ class Data:
       self.questions[qa['id']] = qa['question']
 
       # Tokenize question
+      tokenized_question = word_tokenize(qa['question'])
       processed_question = [ self.dictionary.add_or_get_index(word) \
-                               for word in word_tokenize(qa['question']) ]
+                               for word in tokenized_question ]
       processed_question = filter(None, processed_question)
+      _, question_tags = zip(*pos_tag(tokenized_question))
+      question_tags = [ self.dictionary.add_or_get_tag(tag) for tag in question_tags ]
 
       # Tokenize answer phrases
       processed_answers = []
@@ -158,7 +174,7 @@ class Data:
                              self.dictionary.answer_end + " " + \
                              para_text[end_idx:]
         answer_idxs = [ i for i,idx in \
-                          enumerate(self.word_tokenize_para(para_text_modified)) \
+                          enumerate(self.word_tokenize_para(para_text_modified)[0]) \
                           if idx == -1 ]
         answer_idxs[1] -= 2
 
@@ -184,7 +200,7 @@ class Data:
           for end in range(max(start,processed_answer[0]),len(tokenized_para)):
             f1_partial_matrix[start, end-processed_answer[0]] = \
               self.f1_score(start, end, processed_answer[0], processed_answer[1])
-        self.data.append([processed_question, processed_answer, qa['id'], f1_partial_matrix])
+        self.data.append([processed_question, processed_answer, qa['id'], f1_partial_matrix, question_tags])
 
     # Store paragraph text
     self.paragraphs.append(para_text)
@@ -226,6 +242,10 @@ def create2d(partial_matrix, element, length, ans_start):
   padded_mat = numpy.zeros((length, length))
   padded_mat[:partial_matrix.shape[0], ans_start:ans_start+partial_matrix.shape[1]] = partial_matrix
   return padded_mat
+
+# Create a one-hot vector of the given size, with position 'pos' set to 1.
+def one_hot(pos, size):
+  return [ 1 if i == pos else 0 for i in range(size) ]
 
 # Read train and dev data, either from json files or from pickles, and dump them in
 # pickles if necessary.

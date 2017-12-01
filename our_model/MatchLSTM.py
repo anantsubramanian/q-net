@@ -33,6 +33,7 @@ class MatchLSTM(nn.Module):
     self.use_glove = config['use_glove']
     self.use_cuda = config['cuda']
     self.dropout = config['dropout']
+    self.num_pos_tags = config['num_pos_tags']
 
   def build_model(self):
     # Embedding look-up.
@@ -58,7 +59,7 @@ class MatchLSTM(nn.Module):
     self.dropoutq = nn.Dropout(self.dropout)
 
     # Passage and Question LSTMs (matrices Hp and Hq respectively).
-    self.preprocessing_lstm = nn.LSTMCell(input_size = self.embed_size,
+    self.preprocessing_lstm = nn.LSTMCell(input_size = self.embed_size + self.num_pos_tags,
                                           hidden_size = self.hidden_size)
 
     # Attention transformations (variable names below given against those in
@@ -79,17 +80,18 @@ class MatchLSTM(nn.Module):
     self.alpha_transform_for_answer = nn.Linear(self.hidden_size, 1)
 
     # Answer pointer attention transformations.
-    self.attend_match_lstm = nn.Linear(self.hidden_size * 2,
+    self.attend_match_lstm = nn.Linear(self.hidden_size * 2 + self.num_pos_tags,
                                        self.hidden_size * 2, bias = False)
-    self.attend_match_lstm_b = nn.Linear(self.hidden_size * 2,
+    self.attend_match_lstm_b = nn.Linear(self.hidden_size * 2 + self.num_pos_tags,
                                          self.hidden_size * 2, bias = False)
     self.attend_answer = nn.Linear(self.hidden_size * 2, self.hidden_size * 2)
     self.beta_transform = nn.Linear(self.hidden_size * 2, 1)
     self.dropout_ptr = nn.Dropout(self.dropout)
 
     # Answer pointer LSTM.
-    self.answer_pointer_lstm = nn.LSTMCell(input_size = self.hidden_size * 4,
-                                           hidden_size = self.hidden_size * 2)
+    self.answer_pointer_lstm = \
+      nn.LSTMCell(input_size = self.hidden_size * 4 + self.num_pos_tags,
+                  hidden_size = self.hidden_size * 2)
 
   def save(self, path, epoch):
     torch.save(self, path + "/epoch_" + str(epoch) + ".pt")
@@ -182,7 +184,7 @@ class MatchLSTM(nn.Module):
 
   # Get a question-aware passage representation.
   def match_question_passage(self, Hp, Hq, max_passage_len,
-                             passage_lens, batch_size):
+                             passage_lens, batch_size, passage_pos_tags):
     # Initial hidden and cell states for forward and backward LSTMs.
     # h{f,b}.shape = (batch, hdim)
     hf, cf = self.get_initial_lstm(batch_size)
@@ -250,8 +252,9 @@ class MatchLSTM(nn.Module):
     Hf = torch.stack(Hf, dim=0)
     Hb = torch.stack(Hb, dim=0)
 
-    # Hr.shape = (seq_len, batch, 2 * hdim)
+    # Hr.shape = (seq_len, batch, 2 * hdim + num_pos_tags)
     Hr = torch.cat((Hf, Hb), dim=-1)
+    Hr = torch.cat((Hr, passage_pos_tags), dim=-1)
     return Hr
 
 
@@ -322,13 +325,13 @@ class MatchLSTM(nn.Module):
         answer_distributions.append(torch.t(torch.squeeze(beta_k, dim=-1)))
         answer_distributions_b.append(torch.t(torch.squeeze(beta_k_b, dim=-1)))
 
-      # weighted_Hr.shape = (batch, 2*hdim)
+      # weighted_Hr.shape = (batch, 2*hdim + num_pos_tags)
       weighted_Hr = torch.squeeze(torch.bmm(beta_k.permute(1, 2, 0),
                                             torch.transpose(Hr, 0, 1)), dim=1)
       weighted_Hr_b = torch.squeeze(torch.bmm(beta_k_b.permute(1, 2, 0),
                                               torch.transpose(Hr, 0, 1)), dim=1)
 
-      # a{f,b}.shape = (batch, 4*hdim)
+      # a{f,b}.shape = (batch, 4*hdim + num_pos_tags)
       af = torch.cat((weighted_Hr, weighted_Hq_for_answer), dim=-1)
       ab = torch.cat((weighted_Hr_b, weighted_Hq_for_answer), dim=-1)
 
@@ -354,7 +357,10 @@ class MatchLSTM(nn.Module):
   # question = tuple((seq_len, batch), len_within_batch)
   # answer = tuple((2, batch))
   # f1_matrices = (batch, seq_len, seq_len)
-  def forward(self, passage, question, answer, f1_matrices):
+  # question_pos_tags = (seq_len, batch, num_pos_tags)
+  # passage_pos_tags = (seq_len, batch, num_pos_tags)
+  def forward(self, passage, question, answer, f1_matrices, question_pos_tags,
+              passage_pos_tags):
     if not self.use_glove:
       padded_passage = self.placeholder(passage[0], False)
       padded_question = self.placeholder(question[0], False)
@@ -374,8 +380,9 @@ class MatchLSTM(nn.Module):
       q = self.get_glove_embeddings(question[0])
 
     # Embedding input dropout.
-    p = self.dropoutp(p)
-    q = self.dropoutq(q)
+    # {p,q}.shape = (seq_len, batch, embedding_dim + num_pos_tags)
+    p = self.dropoutp(torch.cat((p, self.placeholder(passage_pos_tags)), dim=-1))
+    q = self.dropoutq(torch.cat((q, self.placeholder(question_pos_tags)), dim=-1))
 
     # Preprocessing LSTM outputs for passage and question input.
     # H{p,q}.shape = (seq_len, batch, 2 * hdim)
@@ -383,9 +390,9 @@ class MatchLSTM(nn.Module):
     Hq = self.preprocess_input(q, max_question_len, question_lens, batch_size)
 
     # Bi-directional match-LSTM layer.
-    # Hr.shape = (seq_len, batch, 2 * hdim)
+    # Hr.shape = (seq_len, batch, 2 * hdim + num_pos_tags)
     Hr = self.match_question_passage(Hp, Hq, max_passage_len, passage_lens,
-                                     batch_size)
+                                     batch_size, self.placeholder(passage_pos_tags))
     # Question-aware passage representation dropout.
     Hr = self.dropout_ptr(Hr)
 
