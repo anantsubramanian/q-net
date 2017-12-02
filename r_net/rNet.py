@@ -53,10 +53,13 @@ class rNet(nn.Module):
     self.p_dropout = nn.Dropout(self.dropout)
     self.q_dropout = nn.Dropout(self.dropout)
 
-    # Passage and question pre-processing GRU.
-    self.preprocess_gru = nn.GRU(input_size = self.embed_size + 2*self.hidden_size,
-                                 hidden_size = self.hidden_size,
-                                 num_layers = 3, dropout=self.dropout)
+    # Passage and question pre-processing GRU (3-layer, bi-directional).
+    for layer_no in range(3):
+      input_size = self.embed_size + 2 * self.hidden_size \
+                     if layer_no == 0 else 2 * self.hidden_size
+      setattr(self, 'preprocess_gru_' + str(layer_no),
+              nn.GRUCell(input_size = input_size,
+                         hidden_size = self.hidden_size))
 
     # Match-GRU Attention transformations.
     self.attend_question = nn.Linear(2*self.hidden_size, self.hidden_size, bias = False)
@@ -125,7 +128,6 @@ class rNet(nn.Module):
   def load(self, path, epoch):
     self = torch.load(path + "/epoch_" + str(epoch) + ".pt")
     self.char_gru.flatten_parameters()
-    self.preprocess_gru.flatten_parameters()
     return self
 
   def free_memory(self):
@@ -234,31 +236,32 @@ class rNet(nn.Module):
     rev = torch.stack(rev, dim=1)
     return rev
 
-  # Pre-process the combined char+word level word embeddings, by passing
-  # them through a 3-layer bi-directional GRU. Only the final layer
-  # hidden states are considered in the output.
-  def preprocess_inputs(self, combined_word_char_inp_f,
-                        combined_word_char_inp_b, max_len, lens,
-                        batch_size):
+  # Pre-process inputs by passing them through a bi-directional GRU.
+  def preprocess_inputs(self, layer_no, inputs_f, inputs_b, max_len,
+                        lens, batch_size):
+    Hf, Hb = [], []
 
-    Hf, _ = self.preprocess_gru(combined_word_char_inp_f,
-                                self.get_initial_gru(batch_size, 3))
-    Hb, _ = self.preprocess_gru(combined_word_char_inp_b,
-                                self.get_initial_gru(batch_size, 3))
-
-    # Reverse the backward pre-processing output, before concatenating
-    # with the forward output.
-    Hb = self.reverse_preprocessing_input(Hb, max_len,
-                                          lens, batch_size)
-    # H.shape = (seq_len, batch, 2 * hdim)
-    H = torch.cat((Hf, Hb), dim=-1)
-
-    # Mask out padding hidden states for pre-processing GRU output.
-    masks = []
+    # h{f,b}.shape = (batch_size, hdim)
+    hf = self.get_initial_gru(batch_size, for_cell = True)
+    hb = self.get_initial_gru(batch_size, for_cell = True)
     for t in range(max_len):
-      masks.append(np.array([ [1.0] if t < lens[i] else [0.0] \
-                                for i in range(batch_size) ]))
-    H = H * self.placeholder(np.array(masks))
+      hf = getattr(self, 'preprocess_gru_' + layer_no)(inputs_f[t], hf)
+      hb = getattr(self, 'preprocess_gru_' + layer_no)(inputs_b[t], hb)
+
+      # Mask out padded regions of input.
+      mask = self.placeholder(np.array([ [1.0] if t < lens[i] else [0.0] \
+                                           for i in range(batch_size) ]))
+      hf = hf * mask
+      hb = hb * mask
+      Hf.append(hf)
+      Hb.append(hb)
+
+    # H{f,b}.shape = (seq_len, batch, hdim)
+    # H.shape = (seq_len, batch, 2 * hdim)
+    Hf = torch.stack(Hf, dim=0)
+    Hb = torch.stack(Hb, dim=0)
+    Hb = self.reverse_preprocessing_input(Hb, max_len, lens, batch_size)
+    H = torch.cat((Hf, Hb), dim=-1)
     return H
 
   # Get a question-aware passage representation.
@@ -552,10 +555,10 @@ class rNet(nn.Module):
     # {q,p}_c_b.shape = (seq_len, batch_size, 2 * hidden_size)
     q_c_b = \
       self.reverse_preprocessing_input(q_c_f, max_question_len,
-                                            question_lens, batch_size)
+                                       question_lens, batch_size)
     p_c_b = \
       self.reverse_preprocessing_input(p_c_f, max_passage_len,
-                                            passage_lens, batch_size)
+                                       passage_lens, batch_size)
 
     # Get word-level passage and question embeddings.
     if not self.use_glove:
@@ -584,11 +587,24 @@ class rNet(nn.Module):
     q_combined_b = self.q_dropout(q_combined_b)
 
     # Preprocessing GRU outputs.
-    # H{p,q}.shape = (seq_len, batch, hdim)
-    Hp = self.preprocess_inputs(p_combined_f, p_combined_b, max_passage_len,
-                                passage_lens, batch_size)
-    Hq = self.preprocess_inputs(q_combined_f, q_combined_b, max_question_len,
-                                question_lens, batch_size)
+    # H{p,q}.shape = (seq_len, batch, 2 * hdim)
+    Hp_f, Hp_b = p_combined_f, p_combined_b
+    for layer_no in range(3):
+      Hp_f = self.preprocess_inputs(str(layer_no), Hp_f, Hp_b, max_passage_len,
+                                    passage_lens, batch_size)
+      Hp_f = self.p_dropout(Hp_f)
+      Hp_b = self.reverse_preprocessing_input(Hp_f, max_passage_len, passage_lens,
+                                              batch_size)
+    Hp = Hp_f
+
+    Hq_f, Hq_b = q_combined_f, q_combined_b
+    for layer_no in range(3):
+      Hq_f = self.preprocess_inputs(str(layer_no), Hq_f, Hq_b, max_question_len,
+                                    question_lens, batch_size)
+      Hq_f = self.q_dropout(Hq_f)
+      Hq_b = self.reverse_preprocessing_input(Hq_f, max_question_len, question_lens,
+                                              batch_size)
+    Hq = Hq_f
 
     # Bi-directional match-GRU layer.
     Hr = self.match_passage_question(Hp, Hq, max_passage_len, passage_lens,
