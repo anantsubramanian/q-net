@@ -58,29 +58,32 @@ class MatchLSTM(nn.Module):
       self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
                                     self.word_to_index['<pad>'])
 
-    self.dropoutp = nn.Dropout(self.dropout)
-    self.dropoutq = nn.Dropout(self.dropout)
-
     # Passage and Question pre-processing LSTMs (matrices Hp and Hq respectively).
     for layer_no in range(self.num_preprocessing_layers):
       input_size = self.embed_size + self.num_pos_tags \
                      if layer_no == 0 else self.hidden_size * 2
+      setattr(self, 'dropoutp_' + str(layer_no), nn.Dropout(self.dropout))
+      setattr(self, 'dropoutq_' + str(layer_no), nn.Dropout(self.dropout))
       setattr(self, 'preprocessing_lstm_' + str(layer_no),
               nn.LSTMCell(input_size = input_size, hidden_size = self.hidden_size))
 
     # Attention transformations (variable names below given against those in
     # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
     # and answer pointer." arXiv preprint arXiv:1608.07905 (2016).)
-    self.attend_question = nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False)
-    self.attend_passage = nn.Linear(self.hidden_size * 2, self.hidden_size)
-    self.attend_hidden = nn.Linear(self.hidden_size, self.hidden_size, bias = False)
-    self.alpha_transform = nn.Linear(self.hidden_size, 1)
-
-    # Final Match-LSTM cells (bi-directional).
     for layer_no in range(self.num_matchlstm_layers):
+      setattr(self, 'attend_question_' + str(layer_no),
+              nn.Linear(self.hidden_size * 2, self.hidden_size, bias = False))
+      setattr(self, 'attend_passage_' + str(layer_no),
+              nn.Linear(self.hidden_size * 2, self.hidden_size))
+      setattr(self, 'attend_hidden_' + str(layer_no),
+              nn.Linear(self.hidden_size, self.hidden_size, bias = False))
+      setattr(self, 'alpha_transform_' + str(layer_no),
+              nn.Linear(self.hidden_size, 1))
+      # Final Match-LSTM cells (bi-directional).
       setattr(self, 'match_lstm_' + str(layer_no),
               nn.LSTMCell(input_size = self.hidden_size * 4,
                           hidden_size = self.hidden_size))
+      setattr(self, 'dropout_matchlstm_' + str(layer_no), nn.Dropout(self.dropout))
 
     # Question attention for answer pointer network.
     self.attend_question_for_answer = nn.Linear(self.hidden_size * 2,
@@ -94,7 +97,6 @@ class MatchLSTM(nn.Module):
                                          self.hidden_size * 2, bias = False)
     self.attend_answer = nn.Linear(self.hidden_size * 2, self.hidden_size * 2)
     self.beta_transform = nn.Linear(self.hidden_size * 2, 1)
-    self.dropout_ptr = nn.Dropout(self.dropout)
 
     # Answer pointer LSTM.
     self.answer_pointer_lstm = \
@@ -202,22 +204,22 @@ class MatchLSTM(nn.Module):
     # Get vectors zi for each i in passage.
     # Attended question is the same at each time step. Just compute it once.
     # attended_question.shape = (seq_len, batch, hdim)
-    attended_question = self.attend_question(Hq)
+    attended_question = getattr(self, 'attend_question_' + layer_no)(Hq)
     Hf, Hb = [], []
     for i in range(max_passage_len):
         forward_idx = i
         backward_idx = max_passage_len-i-1
         # g{f,b}.shape = (seq_len, batch, hdim)
         gf = f.tanh(attended_question + \
-                (self.attend_passage(Hpi[forward_idx]).expand_as(attended_question) + \
-                 self.attend_hidden(hf)))
+                (getattr(self, 'attend_passage_' + layer_no)(Hpi[forward_idx]) + \
+                 getattr(self, 'attend_hidden_' + layer_no)(hf)))
         gb = f.tanh(attended_question + \
-                (self.attend_passage(Hpi[backward_idx]).expand_as(attended_question) + \
-                 self.attend_hidden(hb)))
+                (getattr(self, 'attend_passage_' + layer_no)(Hpi[backward_idx]) + \
+                 getattr(self, 'attend_hidden_' + layer_no)(hb)))
 
         # alpha_{f,g}.shape = (seq_len, batch, 1)
-        alpha_f = f.softmax(self.alpha_transform(gf), dim=0)
-        alpha_b = f.softmax(self.alpha_transform(gb), dim=0)
+        alpha_f = f.softmax(getattr(self, 'alpha_transform_' + layer_no)(gf), dim=0)
+        alpha_b = f.softmax(getattr(self, 'alpha_transform_' + layer_no)(gb), dim=0)
 
         # Hp[{forward,backward}_idx].shape = (batch, 2 * hdim)
         # Hq = (seq_len, batch, 2 * hdim)
@@ -389,22 +391,22 @@ class MatchLSTM(nn.Module):
 
     # Embedding input dropout.
     # {p,q}.shape = (seq_len, batch, embedding_dim + num_pos_tags)
-    p = self.dropoutp(torch.cat((p, self.placeholder(passage_pos_tags)), dim=-1))
-    q = self.dropoutq(torch.cat((q, self.placeholder(question_pos_tags)), dim=-1))
+    p = torch.cat((p, self.placeholder(passage_pos_tags)), dim=-1)
+    q = torch.cat((q, self.placeholder(question_pos_tags)), dim=-1)
 
     # Preprocessing LSTM outputs for passage and question input.
     # H{p,q}.shape = (seq_len, batch, 2 * hdim)
     Hp = p
     for layer_no in range(self.num_preprocessing_layers):
+      Hp = getattr(self, 'dropoutp_' + str(layer_no))(Hp)
       Hp = self.preprocess_input(str(layer_no), Hp, max_passage_len, passage_lens,
                                  batch_size)
-      Hp = self.dropoutp(Hp)
 
     Hq = q
     for layer_no in range(self.num_preprocessing_layers):
+      Hq = getattr(self, 'dropoutq_' + str(layer_no))(Hq)
       Hq = self.preprocess_input(str(layer_no), Hq, max_question_len, question_lens,
                                  batch_size)
-      Hq = self.dropoutq(Hq)
 
     # Bi-directional multi-layer MatchLSTM.
     # Hr.shape = (seq_len, batch, 2 * hdim + num_pos_tags)
@@ -416,7 +418,7 @@ class MatchLSTM(nn.Module):
       if layer_no == self.num_matchlstm_layers - 1:
         Hr = torch.cat((Hr, self.placeholder(passage_pos_tags)), dim=-1)
       # Question-aware passage representation dropout.
-      Hr = self.dropout_ptr(Hr)
+      Hr = getattr(self, 'dropout_matchlstm_' + str(layer_no))(Hr)
 
     # Get probability distributions over the answer start, answer end,
     # and the loss for training.
