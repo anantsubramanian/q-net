@@ -7,6 +7,8 @@ import argparse
 import json
 import sys
 
+from nltk import word_tokenize, sent_tokenize
+
 
 def normalize_answer(s):
     """Lower text and remove punctuation, articles and extra whitespace."""
@@ -55,6 +57,10 @@ def evaluate(dataset, predictions):
     f1 = exact_match = total = 0
     f1s = {}
     ems = {}
+    correct_count = 0.0
+    total_count = 0.0
+    missed = 0
+    zero = 0.0
     for article in dataset:
         for paragraph in article['paragraphs']:
             for qa in paragraph['qas']:
@@ -68,6 +74,27 @@ def evaluate(dataset, predictions):
                 prediction = predictions[qa['id']]
                 f1s[qa['id']] = metric_max_over_ground_truths(f1_score, prediction, ground_truths)
                 ems[qa['id']] = metric_max_over_ground_truths(exact_match_score, prediction, ground_truths)
+                if f1s[qa['id']] == 0.0:
+                  zero += 1
+                  sentences = [ x for x in sent_tokenize(paragraph['context']) ]
+                  ans_sentence_idxs = []
+                  for ans in ground_truths:
+                    sentence_list = [ i for i in range(len(sentences)) if ans in sentences[i] ]
+                    if len(sentence_list) == 0:
+                      ans_sentence_idxs = [ -1 ]
+                      missed += 1
+                    else:
+                      ans_sentence_idxs.append(sentence_list[0])
+                  sentences = [ " ".join(word_tokenize(x)) for x in sentences ]
+                  prediction_idxs = [ i for i in range(len(sentences)) if prediction in sentences[i] ]
+                  if len(prediction_idxs) == 0:
+                    prediction_idx = -1
+                    missed += 1
+                  else:
+                    prediction_idx = prediction_idxs[0]
+                  if prediction_idx in ans_sentence_idxs:
+                    correct_count += 1
+                  total_count += 1
                 exact_match += metric_max_over_ground_truths(
                     exact_match_score, prediction, ground_truths)
                 f1 += metric_max_over_ground_truths(
@@ -75,8 +102,12 @@ def evaluate(dataset, predictions):
 
     exact_match = 100.0 * exact_match / total
     f1 = 100.0 * f1 / total
+    correct_sentences = 100.0 * correct_count / total_count
+    missed = 100.0 * missed / float(total)
+    zero = 100.0 * zero / float(total)
 
-    return {'exact_match': exact_match, 'f1': f1}, f1s, ems
+    return {'exact_match': exact_match, 'f1': f1, 'correct_sentences': correct_sentences, 'missed': missed,
+            'zero': zero }, f1s, ems
 
 
 if __name__ == '__main__':
