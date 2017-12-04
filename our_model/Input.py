@@ -144,12 +144,14 @@ class Data:
     while start_idx > 0 and \
           tokenized_para[start_idx] not in self.sentence_end_markers:
       start_idx -= 1
-    # Ignore the punctuation.
-    if start_idx > 0:
-      start_idx += 1
     while end_idx < len(tokenized_para) and \
           tokenized_para[end_idx] not in self.sentence_end_markers:
       end_idx += 1
+
+    # Ignore the punctuation.
+    start_idx += 1
+    end_idx -= 1
+
     return start_idx, end_idx
 
   def add_paragraph(self, paragraph):
