@@ -148,9 +148,11 @@ class Data:
           tokenized_para[end_idx] not in self.sentence_end_markers:
       end_idx += 1
 
-    # Ignore the punctuation.
-    start_idx += 1
-    end_idx -= 1
+    # Ignore the punctuation if necessary.
+    if not start_idx == ans_start_idx:
+      start_idx += 1
+    if not end_idx == ans_end_idx:
+      end_idx -= 1
 
     return start_idx, end_idx
 
@@ -214,6 +216,12 @@ class Data:
         sentence_idxs.append(self.get_sent_start_end(tokenized_para_words,
                                                      answer_idxs[0],
                                                      answer_idxs[1]))
+        assert sentence_idxs[-1][0] >= 0 and \
+               sentence_idxs[-1][0] < len(tokenized_para_words) and \
+               sentence_idxs[-1][0] <= answer_idxs[0]
+        assert sentence_idxs[-1][1] >= sentence_idxs[-1][0] and \
+               sentence_idxs[-1][1] < len(tokenized_para_words) and \
+               sentence_idxs[-1][1] >= answer_idxs[1]
 
       # Create question-answer pairs
       for processed_answer, sentence_idx in zip(processed_answers, sentence_idxs):
