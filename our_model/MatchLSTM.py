@@ -10,7 +10,7 @@ class MatchLSTM(nn.Module):
   ''' Match-LSTM model definition. Properties specified in config.'''
 
   # Constructor
-  def __init__(self, config):
+  def __init__(self, config, debug = False):
     # Call constructor of nn module.
     super(MatchLSTM, self).__init__()
 
@@ -18,7 +18,7 @@ class MatchLSTM(nn.Module):
     self.load_from_config(config)
 
     # Construct the model, storing all necessary layers.
-    self.build_model()
+    self.build_model(debug)
 
   # Load configuration options
   def load_from_config(self, config):
@@ -39,11 +39,11 @@ class MatchLSTM(nn.Module):
     self.num_question_matchlstm_layers = config['num_question_matchlstm_layers']
     self.num_passage_matchlstm_layers = config['num_passage_matchlstm_layers']
 
-  def build_model(self):
+  def build_model(self, debug):
     # Embedding look-up.
     self.oov_count = 0
     self.oov_list = []
-    if self.use_glove:
+    if self.use_glove and not debug:
       embeddings = np.zeros((self.vocab_size, self.embed_size))
       with open(self.glove_path) as f:
         for line in f:
@@ -55,6 +55,8 @@ class MatchLSTM(nn.Module):
           self.oov_count += 1
           self.oov_list.append(self.index_to_word[i])
       self.embedding = embeddings
+    elif debug:
+      self.embedding = np.zeros((self.vocab_size, self.embed_size))
     else:
       self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
                                     self.word_to_index['<pad>'])
@@ -104,26 +106,39 @@ class MatchLSTM(nn.Module):
                           hidden_size = self.hidden_size))
       setattr(self, 'dropout_passage_matchlstm_' + str(layer_no), nn.Dropout(self.dropout))
 
-    # Question attention for answer pointer network.
-    self.attend_question_for_answer = nn.Linear(self.hidden_size * 4 + self.num_pos_tags,
-                                                self.hidden_size, bias = False)
-    self.alpha_transform_for_answer = nn.Linear(self.hidden_size, 1)
+    # 2-layer answer pointer network. First layer identifies the answer sentence, while
+    # the second layer refines this to the correct answer span.
+    for layer_no in range(2):
+      input_size = self.hidden_size * 2 + self.num_pos_tags
+      lstm_input_size = input_size + self.hidden_size * 4 + self.num_pos_tags if layer_no == 0 \
+                        else input_size + self.hidden_size * 12 + self.num_pos_tags * 3
+      layer_no = str(layer_no)
+      # Answer pointer attention transformations.
+      # Question attentions for answer sentence pointer network.
+      setattr(self, 'attend_question_' + layer_no,
+              nn.Linear(self.hidden_size * 4 + self.num_pos_tags,
+                        self.hidden_size, bias = False))
+      setattr(self, 'alpha_transform_' + layer_no, nn.Linear(self.hidden_size, 1))
 
-    # Answer pointer attention transformations.
-    self.attend_match_lstm = nn.Linear(self.hidden_size * 2 + self.num_pos_tags,
-                                       self.hidden_size * 4 + self.num_pos_tags,
-                                       bias = False)
-    self.attend_match_lstm_b = nn.Linear(self.hidden_size * 2 + self.num_pos_tags,
-                                         self.hidden_size * 4 + self.num_pos_tags,
-                                         bias = False)
-    self.attend_answer = nn.Linear(self.hidden_size * 4 + self.num_pos_tags,
-                                   self.hidden_size * 4 + self.num_pos_tags)
-    self.beta_transform = nn.Linear(self.hidden_size * 4 + self.num_pos_tags, 1)
+      # Attend to the input.
+      setattr(self, 'attend_input_' + layer_no,
+              nn.Linear(input_size, self.hidden_size * 4 + self.num_pos_tags,
+                        bias = False))
+      setattr(self, 'attend_input_b_' + layer_no,
+              nn.Linear(input_size, self.hidden_size * 4 + self.num_pos_tags,
+                        bias = False))
 
-    # Answer pointer LSTM.
-    self.answer_pointer_lstm = \
-      nn.LSTMCell(input_size = self.hidden_size * 6 + self.num_pos_tags * 2,
-                  hidden_size = self.hidden_size * 4 + self.num_pos_tags)
+      # Attend to answer hidden state.
+      setattr(self, 'attend_answer_' + layer_no,
+              nn.Linear(self.hidden_size * 4 + self.num_pos_tags,
+                        self.hidden_size * 4 + self.num_pos_tags))
+      setattr(self, 'beta_transform_' + layer_no,
+              nn.Linear(self.hidden_size * 4 + self.num_pos_tags, 1))
+
+      # Answer pointer LSTM.
+      setattr(self, 'answer_pointer_lstm_' + layer_no,
+              nn.LSTMCell(input_size = lstm_input_size,
+                          hidden_size = self.hidden_size * 4 + self.num_pos_tags))
 
   def save(self, path, epoch):
     torch.save(self, path + "/epoch_" + str(epoch) + ".pt")
@@ -161,7 +176,7 @@ class MatchLSTM(nn.Module):
   # Get an initial tuple of (h0, c0).
   # h0, c0 have dims (num_directions * num_layers, batch_size, hidden_size)
   # If for a cell, they have dims (batch_size, hidden_size)
-  def get_initial_lstm(self, batch_size, for_cell = True, hidden_size = None):
+  def get_initial_lstm(self, batch_size, hidden_size = None, for_cell = True):
     if hidden_size is None:
       hidden_size = self.hidden_size
     if not for_cell:
@@ -366,44 +381,50 @@ class MatchLSTM(nn.Module):
     return Hr
 
   # Boundary pointer model, that gives probability distributions over the
-  # answer start and answer end indices. Additionally returns the loss
-  # for training.
-  def answer_pointer(self, Hr, Hp, Hq, max_question_len, question_lens,
-                     max_passage_len, passage_lens, batch_size, answer,
-                     f1_matrices):
-    # attended_match_lstm[_b].shape = (seq_len, batch, 4*hdim + num_pos_tags)
-    attended_match_lstm = self.attend_match_lstm(Hr)
-    attended_match_lstm_b = self.attend_match_lstm_b(Hr)
+  # start and end indices. Returns the hidden states, as well as the predicted
+  # distributions.
+  def answer_pointer(self, layer_no, Hr, Hp, Hq, max_question_len, question_lens,
+                     max_passage_len, passage_lens, batch_size, Hprev = None):
+    # attended_input[_b].shape = (seq_len, batch, 4*hdim + num_pos_tags)
+    attended_input = getattr(self, 'attend_input_' + layer_no)(Hr)
+    attended_input_b = getattr(self, 'attend_input_b_' + layer_no)(Hr)
 
-    # weighted_Hq_for_answer.shape = (batch, 4*hdim + num_pos_tags)
-    attended_question_for_answer = f.tanh(self.attend_question_for_answer(Hq))
-    alpha_q = f.softmax(self.alpha_transform_for_answer(attended_question_for_answer), dim=0)
-    weighted_Hq_for_answer = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
-                                                     torch.transpose(Hq, 0, 1)), dim=1)
+    # weighted_Hq.shape = (batch, 4*hdim + num_pos_tags)
+    attended_question = f.tanh(getattr(self, 'attend_question_' + layer_no)(Hq))
+    alpha_q = f.softmax(getattr(self, 'alpha_transform_' + layer_no)(attended_question), dim=0)
+    weighted_Hq = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
+                                          torch.transpose(Hq, 0, 1)), dim=1)
 
     # {h,c}{a,b}.shape = (batch, 4*hdim + num_pos_tags)
-    ha, ca = self.get_initial_lstm(batch_size, hidden_size=self.hidden_size * 4 + self.num_pos_tags)
-    hb, cb = self.get_initial_lstm(batch_size, hidden_size=self.hidden_size * 4 + self.num_pos_tags)
+    ha, ca = self.get_initial_lstm(batch_size, self.hidden_size * 4 + self.num_pos_tags)
+    hb, cb = self.get_initial_lstm(batch_size, self.hidden_size * 4 + self.num_pos_tags)
 
     answer_distributions = []
     answer_distributions_b = []
-    mle_losses = []
+    Hf, Hb = [], []
 
-    # Two three-step LSTMs: Point to the start of the answer first, then the end,
-    # and point to the answer end, then the start.
+    # Two three-step LSTMs:
+    #   1) Point to the start index first, then the end index.
+    #   2) Point to the end index first, then the start index.
     # 1st step initializes the hidden states to some answer representations.
-    # 2nd predicts start/end distribution.
-    # 3rd predicts end/start distribution.
+    # 2nd step predicts start/end distributions in 1/2 respectively.
+    # 3rd step predicts end/start distributions in 1/2 respectively.
     for k in range(3):
       # Fk[_b].shape = (seq_len, batch, 4*hdim + num_pos_tags)
-      Fk = f.tanh(attended_match_lstm + self.attend_answer(ha) + weighted_Hq_for_answer)
-      Fk_b = f.tanh(attended_match_lstm_b + self.attend_answer(hb) + weighted_Hq_for_answer)
+      Fk = f.tanh(attended_input + \
+                  getattr(self, 'attend_answer_' + layer_no)(ha) + \
+                  weighted_Hq)
+      Fk_b = f.tanh(attended_input_b + \
+                    getattr(self, 'attend_answer_' + layer_no)(hb) + \
+                    weighted_Hq)
 
       # beta_k[_b]_scores.shape = (seq_len, batch, 1)
       beta_ks = []
-      beta_k_scores = self.beta_transform(Fk)
+      beta_k_scores = getattr(self, 'beta_transform_' + layer_no)(Fk)
       beta_k_bs = []
-      beta_k_b_scores = self.beta_transform(Fk_b)
+      beta_k_b_scores = getattr(self, 'beta_transform_' + layer_no)(Fk_b)
+      # For each item in the batch, take a softmax over only the valid sequence
+      # length, and pad the rest with zeros.
       for idx in range(batch_size):
         beta_k_idx = f.softmax(beta_k_scores[:passage_lens[idx],idx,:], dim=0)
         beta_k_b_idx = f.softmax(beta_k_b_scores[:passage_lens[idx],idx,:], dim=0)
@@ -418,47 +439,107 @@ class MatchLSTM(nn.Module):
         beta_ks.append(beta_k_idx)
         beta_k_bs.append(beta_k_b_idx)
 
-        if k > 0:
-					t_k = k-1
-					mle_losses.append(-torch.log(torch.squeeze(beta_k_idx[answer[t_k][idx]])))
-					mle_losses.append(-torch.log(torch.squeeze(beta_k_b_idx[answer[1-t_k][idx]])))
-
       # beta_k.shape = (seq_len, batch, 1)
       beta_k = torch.stack(beta_ks, dim=1)
       beta_k_b = torch.stack(beta_k_bs, dim=1)
 
-      # Store distribution over passage words for answer start/end.
-      if(k > 0):
-        answer_distributions.append(torch.t(torch.squeeze(beta_k, dim=-1)))
-        answer_distributions_b.append(torch.t(torch.squeeze(beta_k_b, dim=-1)))
+      # Store distributions produced at each step.
+      answer_distributions.append(torch.t(torch.squeeze(beta_k, dim=-1)))
+      answer_distributions_b.append(torch.t(torch.squeeze(beta_k_b, dim=-1)))
 
-      # weighted_Hr.shape = (batch, 2*hdim + num_pos_tags)
+      # weighted_Hr.shape = Hr.shape[1:]
       weighted_Hr = torch.squeeze(torch.bmm(beta_k.permute(1, 2, 0),
                                             torch.transpose(Hr, 0, 1)), dim=1)
       weighted_Hr_b = torch.squeeze(torch.bmm(beta_k_b.permute(1, 2, 0),
                                               torch.transpose(Hr, 0, 1)), dim=1)
 
-      # a{f,b}.shape = (batch, 6*hdim + 2*num_pos_tags)
-      af = torch.cat((weighted_Hr, weighted_Hq_for_answer), dim=-1)
-      ab = torch.cat((weighted_Hr_b, weighted_Hq_for_answer), dim=-1)
+      # a{f,b}.shape = (batch, Hr.shape[1] + weighted_Hq.shape[1])
+      af = torch.cat((weighted_Hr, weighted_Hq), dim=-1)
+      ab = torch.cat((weighted_Hr_b, weighted_Hq), dim=-1)
+
+      # For the second answer pointer layer, also concatenate the previous layer's
+      # hidden state.
+      if layer_no == "1":
+        af = torch.cat((af, Hprev[k]), dim=-1)
+        ab = torch.cat((ab, Hprev[k]), dim=-1)
 
       # LSTM step.
-      ha, ca = self.answer_pointer_lstm(af, (ha, ca))
-      hb, cb = self.answer_pointer_lstm(ab, (hb, cb))
+      ha, ca = getattr(self, 'answer_pointer_lstm_' + layer_no)(af, (ha, ca))
+      hb, cb = getattr(self, 'answer_pointer_lstm_' + layer_no)(ab, (hb, cb))
+
+      Hf.append(ha)
+      Hb.append(hb)
+
+    # H{f,b}.shape = (3, 4 * hdim + num_pos_tags)
+    Hb = Hb[::-1]
+    Hf = torch.stack(Hf, dim=0)
+    Hb = torch.stack(Hb, dim=0)
+
+    # H.shape = (3, 8 * hdim + 2 * num_pos_tags)
+    H = torch.cat((Hf, Hb), dim=-1)
+    return H, answer_distributions, answer_distributions_b
+
+  # Boundary pointer model, that gives probability distributions over the
+  # answer start and answer end indices. Additionally returns the loss
+  # for training.
+  # Internally predicts the sentence start and end in the first layer,
+  # and the answer start and end in the second layer.
+  def point_at_answer(self, Hr, Hp, Hq, max_question_len, question_lens,
+                      max_passage_len, passage_lens, batch_size, answer,
+                      f1_matrices, answer_sentence):
+    mle_losses = []
+    # First layer: predict the answer-containing sentence's start and end
+    # indices.
+    H, answer_distributions, answer_distributions_b = \
+      self.answer_pointer("0", Hr, Hp, Hq, max_question_len,
+                          question_lens, max_passage_len, passage_lens,
+                          batch_size)
+
+    # For each example in the batch, add the negative log of sentence start
+    # and end index probabilities to the MLE loss, from both forward and
+    # backward answer pointers.
+    for idx in range(batch_size):
+      mle_losses.append(-torch.log(
+          answer_distributions[1][idx, answer_sentence[0][idx]]))
+      mle_losses.append(-torch.log(
+          answer_distributions[2][idx, answer_sentence[1][idx]]))
+      mle_losses.append(-torch.log(
+          answer_distributions_b[1][idx, answer_sentence[1][idx]]))
+      mle_losses.append(-torch.log(
+          answer_distributions_b[2][idx, answer_sentence[0][idx]]))
+
+    # Second layer: predict the answer span's start and end indices.
+    _, answer_distributions, answer_distributions_b = \
+      self.answer_pointer("1", Hr, Hp, Hq, max_question_len,
+                          question_lens, max_passage_len, passage_lens,
+                          batch_size, H)
+
+    # For each example in the batch, add the negative log of answer start
+    # and end index probabilities to the MLE loss, from both forward and
+    # backward answer pointers.
+    for idx in range(batch_size):
+      mle_losses.append(-torch.log(
+          answer_distributions[1][idx, answer[0][idx]]))
+      mle_losses.append(-torch.log(
+          answer_distributions[2][idx, answer[1][idx]]))
+      mle_losses.append(-torch.log(
+          answer_distributions_b[1][idx, answer[1][idx]]))
+      mle_losses.append(-torch.log(
+          answer_distributions_b[2][idx, answer[0][idx]]))
 
     # Compute the loss.
-    loss_f = -torch.log(
-                (torch.bmm(torch.unsqueeze(answer_distributions[0], -1),
-                          torch.unsqueeze(answer_distributions[1], 1)) * \
-		             f1_matrices).view(batch_size, -1).sum(1)).sum()
-    loss_b = -torch.log(
-                (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
-                           torch.unsqueeze(answer_distributions_b[0], 1)) * \
-		             f1_matrices).view(batch_size, -1).sum(1)).sum()
-    loss = self.f1_loss_ratio * (loss_f + loss_b) + \
+    loss_f1_f = -torch.log(
+                    (torch.bmm(torch.unsqueeze(answer_distributions[0], -1),
+                               torch.unsqueeze(answer_distributions[1], 1)) * \
+		                 f1_matrices).view(batch_size, -1).sum(1)).sum()
+    loss_f1_b = -torch.log(
+                    (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
+                               torch.unsqueeze(answer_distributions_b[0], 1)) * \
+		                 f1_matrices).view(batch_size, -1).sum(1)).sum()
+    loss = self.f1_loss_ratio * (loss_f1_f + loss_f1_b) + \
            (1 - self.f1_loss_ratio) * sum(mle_losses)
     loss /= batch_size
-    return answer_distributions, answer_distributions_b, loss
+    return answer_distributions[1:], answer_distributions_b[1:], loss
 
   # Forward pass method.
   # passage = tuple((seq_len, batch), len_within_batch)
@@ -468,7 +549,7 @@ class MatchLSTM(nn.Module):
   # question_pos_tags = (seq_len, batch, num_pos_tags)
   # passage_pos_tags = (seq_len, batch, num_pos_tags)
   def forward(self, passage, question, answer, f1_matrices, question_pos_tags,
-              passage_pos_tags):
+              passage_pos_tags, answer_sentence):
     if not self.use_glove:
       padded_passage = self.placeholder(passage[0], False)
       padded_question = self.placeholder(question[0], False)
@@ -534,9 +615,9 @@ class MatchLSTM(nn.Module):
     # and the loss for training.
     # At this point, Hr.shape = (seq_len, batch, 2 * hdim + num_pos_tags)
     answer_distributions, answer_distributions_b, loss = \
-      self.answer_pointer(Hr, Hp, Hq, max_question_len, question_lens,
-                          max_passage_len, passage_lens, batch_size, answer,
-                          f1_mat)
+      self.point_at_answer(Hr, Hp, Hq, max_question_len, question_lens,
+                           max_passage_len, passage_lens, batch_size, answer,
+                           f1_mat, answer_sentence)
 
     self.loss = loss
     return answer_distributions, answer_distributions_b

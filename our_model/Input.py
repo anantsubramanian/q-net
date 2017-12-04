@@ -73,6 +73,7 @@ class Data:
       self.dictionary = dictionary
     if immutable:
       self.dictionary.set_immutable()
+    self.sentence_end_markers = [ ".", "...", "!", "?", ";" ]
     self.questions = {}
     self.paragraphs = []
     self.tokenized_paras = []
@@ -137,6 +138,20 @@ class Data:
     recall = intersection/float(true)
     return 2 * precision * recall / (precision + recall)
 
+  def get_sent_start_end(self, tokenized_para, ans_start_idx, ans_end_idx):
+    start_idx = ans_start_idx
+    end_idx = ans_end_idx
+    while start_idx > 0 and \
+          tokenized_para[start_idx] not in self.sentence_end_markers:
+      start_idx -= 1
+    # Ignore the punctuation.
+    if start_idx > 0:
+      start_idx += 1
+    while end_idx < len(tokenized_para) and \
+          tokenized_para[end_idx] not in self.sentence_end_markers:
+      end_idx += 1
+    return start_idx, end_idx
+
   def add_paragraph(self, paragraph):
     para_text = paragraph['context']
     para_qas = paragraph['qas']
@@ -165,6 +180,7 @@ class Data:
 
       # Tokenize answer phrases
       processed_answers = []
+      sentence_idxs = []
       for answer in qa['answers']:
         start_idx = answer['answer_start']
         end_idx = start_idx + len(answer['text'])
@@ -192,15 +208,20 @@ class Data:
 
         processed_answers.append(answer_idxs)
 
+        # Store paragraph sentence start and end indexes for input.
+        sentence_idxs.append(self.get_sent_start_end(tokenized_para_words,
+                                                     answer_idxs[0],
+                                                     answer_idxs[1]))
 
       # Create question-answer pairs
-      for processed_answer in processed_answers:
+      for processed_answer, sentence_idx in zip(processed_answers, sentence_idxs):
         f1_partial_matrix = numpy.zeros((processed_answer[1]+1, len(tokenized_para)-processed_answer[0]))
         for start in range(0,processed_answer[1]+1):
           for end in range(max(start,processed_answer[0]),len(tokenized_para)):
             f1_partial_matrix[start, end-processed_answer[0]] = \
               self.f1_score(start, end, processed_answer[0], processed_answer[1])
-        self.data.append([processed_question, processed_answer, qa['id'], f1_partial_matrix, question_tags])
+        self.data.append([processed_question, processed_answer, qa['id'], f1_partial_matrix,
+                          question_tags, sentence_idx])
 
     # Store paragraph text
     self.paragraphs.append(para_text)

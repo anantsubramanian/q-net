@@ -135,7 +135,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
              'num_question_matchlstm_layers': args.num_question_matchlstm_layers,
              'num_passage_matchlstm_layers': args.num_passage_matchlstm_layers }
   print "Building model."
-  model = MatchLSTM(config)
+  model = MatchLSTM(config, args.debug)
   print "Done!"
   sys.stdout.flush()
 
@@ -166,6 +166,7 @@ def get_batch(batch, ques_to_para, tokenized_paras, paras_tags, num_tags):
 
   # ans_in.shape = (2, batch)
   ans_in = np.array([ example[1] for example in batch ]).T
+  sent_in = np.array([ example[5] for example in batch ]).T
 
   # f1_mat_in.shape = (batch, seq_len, seq_len)
   f1_mat_in = np.array([ create2d(example[3], 0, max_para_len, example[1][0]) \
@@ -188,9 +189,10 @@ def get_batch(batch, ques_to_para, tokenized_paras, paras_tags, num_tags):
   passage_input = (paras_in, paras_lens_in)
   question_input = (ques_in, ques_lens_in)
   answer_input = ans_in
+  answer_sentence_input = sent_in
 
   return passage_input, question_input, answer_input, f1_mat_in, question_tags,\
-         passage_tags
+         passage_tags, answer_sentence_input
 #------------------------------------------------------------------------------#
 
 
