@@ -25,6 +25,7 @@ class MatchLSTM(nn.Module):
     self.embed_size = config['embed_size']
     self.vocab_size = config['vocab_size']
     self.hidden_size = config['hidden_size']
+    self.attention_size = config['attention_size']
     self.lr_rate = config['lr']
     self.glove_path = config['glove_path']
     self.optimizer = config['optimizer']
@@ -36,7 +37,7 @@ class MatchLSTM(nn.Module):
     self.num_pos_tags = config['num_pos_tags']
     self.f1_loss_ratio = config['f1_loss_ratio']
     self.num_preprocessing_layers = config['num_preprocessing_layers']
-    self.num_passage_matchlstm_layers = config['num_passage_matchlstm_layers']
+    self.num_matchlstm_layers = config['num_matchlstm_layers']
 
   def build_model(self, debug):
     # Embedding look-up.
@@ -72,16 +73,16 @@ class MatchLSTM(nn.Module):
     # Attention transformations (variable names below given against those in
     # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
     # and answer pointer." arXiv preprint arXiv:1608.07905 (2016).)
-    for layer_no in range(self.num_passage_matchlstm_layers):
+    for layer_no in range(self.num_matchlstm_layers):
       setattr(self, 'attend_question_for_passage_' + str(layer_no),
-              nn.Linear(self.hidden_size, self.hidden_size,
+              nn.Linear(self.hidden_size, self.attention_size,
                         bias = False))
       setattr(self, 'attend_passage_for_passage_' + str(layer_no),
-              nn.Linear(self.hidden_size, self.hidden_size))
+              nn.Linear(self.hidden_size, self.attention_size))
       setattr(self, 'attend_passage_hidden_' + str(layer_no),
-              nn.Linear(self.hidden_size // 2, self.hidden_size, bias = False))
+              nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
       setattr(self, 'passage_alpha_transform_' + str(layer_no),
-              nn.Linear(self.hidden_size, 1))
+              nn.Linear(self.attention_size, 1))
       # Final Match-LSTM cells (bi-directional).
       setattr(self, 'passage_match_lstm_' + str(layer_no),
               nn.LSTMCell(input_size = self.hidden_size * 2,
@@ -96,19 +97,21 @@ class MatchLSTM(nn.Module):
       # Answer pointer attention transformations.
       # Question attentions for answer sentence pointer network.
       setattr(self, 'attend_question_' + network_no,
-              nn.Linear(self.hidden_size, self.hidden_size, bias = False))
-      setattr(self, 'alpha_transform_' + network_no, nn.Linear(self.hidden_size, 1))
+              nn.Linear(self.hidden_size, self.attention_size))
+      setattr(self, 'alpha_transform_' + network_no,
+              nn.Linear(self.attention_size, 1))
 
       # Attend to the input.
       setattr(self, 'attend_input_' + network_no,
-              nn.Linear(self.hidden_size, self.hidden_size, bias = False))
+              nn.Linear(self.hidden_size, self.attention_size))
       setattr(self, 'attend_input_b_' + network_no,
-              nn.Linear(self.hidden_size, self.hidden_size, bias = False))
+              nn.Linear(self.hidden_size, self.attention_size))
       # Attend to answer hidden state.
       setattr(self, 'attend_answer_' + network_no,
-              nn.Linear(self.hidden_size // 2, self.hidden_size))
+              nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
 
-      setattr(self, 'beta_transform_' + network_no, nn.Linear(self.hidden_size, 1))
+      setattr(self, 'beta_transform_' + network_no,
+              nn.Linear(self.attention_size, 1))
 
       # Answer pointer LSTM.
       setattr(self, 'answer_pointer_lstm_' + network_no,
@@ -280,10 +283,6 @@ class MatchLSTM(nn.Module):
     weighted_Hq = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
                                           torch.transpose(Hq, 0, 1)), dim=1)
 
-    # Additions to the attention equation that remain constant through time steps.
-    question_input = attended_input + weighted_Hq
-    question_input_b = attended_input_b + weighted_Hq
-
     # {h,c}{a,b}.shape = (batch, hdim / 2)
     ha, ca = self.get_initial_lstm(batch_size, self.hidden_size // 2)
     hb, cb = self.get_initial_lstm(batch_size, self.hidden_size // 2)
@@ -299,9 +298,9 @@ class MatchLSTM(nn.Module):
     # 3rd step predicts end/start distributions in 1/2 respectively.
     for k in range(3):
       # Fk[_b].shape = (seq_len, batch, hdim)
-      Fk = f.tanh(question_input + \
+      Fk = f.tanh(attended_input + \
                   getattr(self, 'attend_answer_' + network_no)(ha))
-      Fk_b = f.tanh(question_input_b + \
+      Fk_b = f.tanh(attended_input_b + \
                     getattr(self, 'attend_answer_' + network_no)(hb))
 
       # beta_k[_b]_scores.shape = (seq_len, batch, 1)
@@ -462,7 +461,7 @@ class MatchLSTM(nn.Module):
 
     # Bi-directional multi-layer MatchLSTM for question-aware passage representation.
     Hr = Hp
-    for layer_no in range(self.num_passage_matchlstm_layers):
+    for layer_no in range(self.num_matchlstm_layers):
       Hr = self.match_question_passage(str(layer_no), Hr, Hq, max_passage_len,
                                        passage_lens, batch_size, mask_p)
       # Question-aware passage representation dropout.

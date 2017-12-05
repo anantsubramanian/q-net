@@ -28,6 +28,7 @@ def init_parser():
   parser.add_argument('--max_dev_articles', type=int, default=-1)
   parser.add_argument('--embed_size', type=int, default=300)
   parser.add_argument('--hidden_size', type=int, default=150)
+  parser.add_argument('--attention_size', type=int, default=150)
   parser.add_argument('--learning_rate', type=float, default=0.005)
   parser.add_argument('--decay_rate', type=float, default=0.95)
   parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt')
@@ -46,7 +47,7 @@ def init_parser():
   parser.add_argument('--use_greedy', action='store_true')
   parser.add_argument('--f1_loss_ratio', type=float, default=0.75)
   parser.add_argument('--num_preprocessing_layers', type=int, default=2)
-  parser.add_argument('--num_passage_matchlstm_layers', type=int, default=2)
+  parser.add_argument('--num_matchlstm_layers', type=int, default=2)
   parser.add_argument('--model_description')
   return parser
 
@@ -118,6 +119,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
   config = { 'embed_size' : args.embed_size,
              'vocab_size' : vocab_size,
              'hidden_size' : args.hidden_size,
+             'attention_size' : args.attention_size,
              'decay_rate' : args.decay_rate,
              'lr' : args.learning_rate,
              'dropout' : args.dropout,
@@ -131,7 +133,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
              'num_pos_tags': num_pos_tags,
              'f1_loss_ratio': args.f1_loss_ratio,
              'num_preprocessing_layers': args.num_preprocessing_layers,
-             'num_passage_matchlstm_layers': args.num_passage_matchlstm_layers }
+             'num_matchlstm_layers': args.num_matchlstm_layers }
   print "Building model."
   model = MatchLSTM(config, args.debug)
   print "Done!"
