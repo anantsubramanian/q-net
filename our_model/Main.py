@@ -471,7 +471,10 @@ def test_model(args):
 if __name__ == "__main__":
   args = init_parser().parse_args()
   assert args.model_description is not None, "Model description must be provided."
-  print args.model_description
+  print "-" * 10 + "Arguments:" + "-" * 10
+  for arg in vars(args):
+    print "--" + arg, getattr(args, arg),
+  print "\n" + "-" * 30
   if args.run_type == "train":
     train_model(args)
   elif args.run_type == "test":
