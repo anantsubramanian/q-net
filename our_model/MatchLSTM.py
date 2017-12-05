@@ -133,11 +133,16 @@ class MatchLSTM(nn.Module):
       # that attends to previous layer hidden states.
       if layer_no != "0":
         setattr(self, 'attend_previous_' + layer_no,
-                nn.Linear(self.hidden_size * 3, self.hidden_size, bias = False))
+                nn.Linear(self.hidden_size, self.hidden_size))
+        setattr(self, 'attend_hidden_for_previous_' + layer_no,
+                nn.Linear(self.hidden_size // 2, self.hidden_size, bias = False))
+        setattr(self, 'alpha_previous_' + layer_no,
+                nn.Linear(self.hidden_size, 1))
 
       # Answer pointer LSTM.
+      input_size = self.hidden_size * 2 if layer_no == "0" else self.hidden_size * 3
       setattr(self, 'answer_pointer_lstm_' + layer_no,
-              nn.LSTMCell(input_size = self.hidden_size * 2,
+              nn.LSTMCell(input_size = input_size,
                           hidden_size = self.hidden_size // 2))
 
   def save(self, path, epoch):
@@ -395,15 +400,6 @@ class MatchLSTM(nn.Module):
     weighted_Hq = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
                                           torch.transpose(Hq, 0, 1)), dim=1)
 
-    # Attend to previous layer hidden states in all layers except the lowest one.
-    if Hprev is not None:
-      attended_previous = \
-        getattr(self, 'attend_previous_' + layer_no)\
-          (Hprev.permute(1, 0, 2).contiguous().view(batch_size, -1))
-    else:
-      attended_previous = self.placeholder(
-                            np.zeros((batch_size, self.hidden_size)))
-
     # {h,c}{a,b}.shape = (batch, hdim / 2)
     ha, ca = self.get_initial_lstm(batch_size, self.hidden_size // 2)
     hb, cb = self.get_initial_lstm(batch_size, self.hidden_size // 2)
@@ -422,12 +418,10 @@ class MatchLSTM(nn.Module):
       # Fk[_b].shape = (seq_len, batch, hdim)
       Fk = f.tanh(attended_input + \
                   getattr(self, 'attend_answer_' + layer_no)(ha) + \
-                  weighted_Hq + \
-                  attended_previous)
+                  weighted_Hq)
       Fk_b = f.tanh(attended_input_b + \
                     getattr(self, 'attend_answer_' + layer_no)(hb) + \
-                    weighted_Hq + \
-                    attended_previous)
+                    weighted_Hq)
 
       # beta_k[_b]_scores.shape = (seq_len, batch, 1)
       beta_ks = []
@@ -468,18 +462,41 @@ class MatchLSTM(nn.Module):
       af = torch.cat((weighted_Hr, weighted_Hq), dim=-1)
       ab = torch.cat((weighted_Hr_b, weighted_Hq), dim=-1)
 
+      # Attend to previous layer hidden states in all layers except the lowest one.
+      if Hprev is not None:
+        attended_previous = \
+          f.tanh(getattr(self, 'attend_previous_' + layer_no)(Hprev) + \
+                 getattr(self, 'attend_hidden_for_previous_' + layer_no)(ha))
+        attended_previous_b = \
+          f.tanh(getattr(self, 'attend_previous_' + layer_no)(Hprev) + \
+                 getattr(self, 'attend_hidden_for_previous_' + layer_no)(hb))
+        alpha_prev = \
+          getattr(self, 'alpha_previous_' + layer_no)(attended_previous)
+        alpha_prev_b = \
+          getattr(self, 'alpha_previous_' + layer_no)(attended_previous_b)
+        weighted_prev = \
+          torch.squeeze(torch.bmm(alpha_prev.permute(1, 2, 0),
+                                  torch.transpose(Hprev, 0, 1)), dim=1)
+        weighted_prev_b = \
+          torch.squeeze(torch.bmm(alpha_prev_b.permute(1, 2, 0),
+                                  torch.transpose(Hprev, 0, 1)), dim=1)
+        af = torch.cat((af, weighted_prev), dim=-1)
+        ab = torch.cat((ab, weighted_prev_b), dim=-1)
+
       # LSTM step.
       ha, ca = getattr(self, 'answer_pointer_lstm_' + layer_no)(af, (ha, ca))
       hb, cb = getattr(self, 'answer_pointer_lstm_' + layer_no)(ab, (hb, cb))
 
-      Hf.append(ha)
-      Hb.append(hb)
+      # Only store the first two hidden states.
+      if k < 2:
+        Hf.append(ha)
+        Hb.append(hb)
 
-    # H{f,b}.shape = (3, batch, hdim / 2)
+    # H{f,b}.shape = (2, batch, hdim / 2)
     Hf = torch.stack(Hf, dim=0)
     Hb = torch.stack(Hb, dim=0)
 
-    # H.shape = (3, batch, hdim)
+    # H.shape = (2, batch, hdim)
     H = torch.cat((Hf, Hb), dim=-1)
     return H, answer_distributions, answer_distributions_b
 
