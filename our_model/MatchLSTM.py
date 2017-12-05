@@ -104,7 +104,7 @@ class MatchLSTM(nn.Module):
       # Final Match-LSTM cells (bi-directional).
       setattr(self, 'passage_match_lstm_' + str(layer_no),
               nn.LSTMCell(input_size = self.hidden_size * 2,
-                          hidden_size = hidden_size // 2))
+                          hidden_size = self.hidden_size // 2))
       setattr(self, 'dropout_passage_matchlstm_' + str(layer_no),
               nn.Dropout(self.dropout))
 
@@ -138,7 +138,7 @@ class MatchLSTM(nn.Module):
       # Answer pointer LSTM.
       setattr(self, 'answer_pointer_lstm_' + layer_no,
               nn.LSTMCell(input_size = self.hidden_size * 2,
-                          hidden_size = hidden_size // 2))
+                          hidden_size = self.hidden_size // 2))
 
   def save(self, path, epoch):
     torch.save(self, path + "/epoch_" + str(epoch) + ".pt")
@@ -423,11 +423,11 @@ class MatchLSTM(nn.Module):
       Fk = f.tanh(attended_input + \
                   getattr(self, 'attend_answer_' + layer_no)(ha) + \
                   weighted_Hq + \
-                  projected_previous)
+                  attended_previous)
       Fk_b = f.tanh(attended_input_b + \
                     getattr(self, 'attend_answer_' + layer_no)(hb) + \
                     weighted_Hq + \
-                    projected_previous)
+                    attended_previous)
 
       # beta_k[_b]_scores.shape = (seq_len, batch, 1)
       beta_ks = []
