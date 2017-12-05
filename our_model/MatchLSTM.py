@@ -193,15 +193,14 @@ class MatchLSTM(nn.Module):
       _, cf = getattr(self, 'preprocessing_lstm_' + layer_no)(inputs[t], (hf, cf))
       _, cb = getattr(self, 'preprocessing_lstm_' + layer_no)(inputs[t_b], (hb, cb))
 
+      # Mask out padded regions of input.
+      cf = cf * mask[t]
+      cb = cb * mask[t_b]
+
       # Don't use LSTM output gating.
       hf = f.tanh(cf)
       hb = f.tanh(cb)
 
-      # Mask out padded regions of input.
-      hf = hf * mask[t]
-      cf = cf * mask[t]
-      hb = hb * mask[t_b]
-      cb = cb * mask[t_b]
       Hf.append(hf)
       Hb.append(hb)
 
