@@ -83,13 +83,16 @@ def read_and_process_data(args):
   print "Sorting datasets in decreasing order of (para + question) lengths."
   train.sort(cmp=lambda x,y:\
       len(x[0]) + len(train_tokenized_paras[train_ques_to_para[x[2]]]) -\
-      (len(y[0]) + len(train_tokenized_paras[train_ques_to_para[y[2]]])))
+      (len(y[0]) + len(train_tokenized_paras[train_ques_to_para[y[2]]])),
+      reverse=True)
   dev.sort(cmp=lambda x,y:\
       len(x[0]) + len(dev_tokenized_paras[dev_ques_to_para[x[2]]]) -\
-      (len(y[0]) + len(dev_tokenized_paras[dev_ques_to_para[y[2]]])))
+      (len(y[0]) + len(dev_tokenized_paras[dev_ques_to_para[y[2]]])),
+      reverse=True)
   test.sort(cmp=lambda x,y:\
       len(x[0]) + len(test_tokenized_paras[test_ques_to_para[x[2]]]) -\
-      (len(y[0]) + len(test_tokenized_paras[test_ques_to_para[y[2]]])))
+      (len(y[0]) + len(test_tokenized_paras[test_ques_to_para[y[2]]])),
+      reverse=True)
   print "Done."
 
   # Debug flag reduces size of input data, for testing purposes.

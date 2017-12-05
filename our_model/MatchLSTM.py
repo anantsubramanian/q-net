@@ -70,24 +70,6 @@ class MatchLSTM(nn.Module):
       setattr(self, 'preprocessing_lstm_' + str(layer_no),
               nn.LSTMCell(input_size = input_size, hidden_size = self.hidden_size // 2))
 
-    # Passage-aware question MatchLSTM layer.
-    for layer_no in range(self.num_question_matchlstm_layers):
-      setattr(self, 'attend_passage_for_question_' + str(layer_no),
-              nn.Linear(self.hidden_size, self.hidden_size, bias = False))
-      setattr(self, 'attend_question_for_question_' + str(layer_no),
-              nn.Linear(self.hidden_size, self.hidden_size))
-      setattr(self, 'attend_question_hidden_' + str(layer_no),
-              nn.Linear(self.hidden_size // 2, self.hidden_size, bias = False))
-      setattr(self, 'question_alpha_transform_' + str(layer_no),
-              nn.Linear(self.hidden_size, 1))
-
-      # Final Match-LSTM cells (bi-directional).
-      setattr(self, 'question_match_lstm_' + str(layer_no),
-              nn.LSTMCell(input_size = self.hidden_size * 2,
-                          hidden_size = self.hidden_size // 2))
-      setattr(self, 'dropout_question_matchlstm_' + str(layer_no),
-              nn.Dropout(self.dropout))
-
     # Attention transformations (variable names below given against those in
     # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
     # and answer pointer." arXiv preprint arXiv:1608.07905 (2016).)
@@ -202,28 +184,24 @@ class MatchLSTM(nn.Module):
   # Get hidden states of a bi-directional pre-processing LSTM run over
   # the given input sequence.
   def preprocess_input(self, layer_no, inputs, max_len, input_lens,
-                       batch_size):
+                       batch_size, mask):
     Hf, Hb = [], []
     hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
     hb, cb = self.get_initial_lstm(batch_size, self.hidden_size // 2)
     for t in range(max_len):
       t_b = max_len - t - 1
-      hf, cf = getattr(self, 'preprocessing_lstm_' + layer_no)(inputs[t], (hf, cf))
-      hb, cb = getattr(self, 'preprocessing_lstm_' + layer_no)(inputs[t_b], (hb, cb))
+      _, cf = getattr(self, 'preprocessing_lstm_' + layer_no)(inputs[t], (hf, cf))
+      _, cb = getattr(self, 'preprocessing_lstm_' + layer_no)(inputs[t_b], (hb, cb))
 
       # Don't use LSTM output gating.
       hf = f.tanh(cf)
       hb = f.tanh(cb)
 
       # Mask out padded regions of input.
-      mask_f = self.placeholder(np.array([ [1.0] if t < input_lens[i] else [0.0] \
-                                             for i in range(batch_size) ]))
-      mask_b = self.placeholder(np.array([ [1.0] if t_b < input_lens[i] else [0.0] \
-                                             for i in range(batch_size) ]))
-      hf = hf * mask_f
-      cf = cf * mask_f
-      hb = hb * mask_b
-      cb = cb * mask_b
+      hf = hf * mask[t]
+      cf = cf * mask[t]
+      hb = hb * mask[t_b]
+      cb = cb * mask[t_b]
       Hf.append(hf)
       Hb.append(hb)
 
@@ -235,85 +213,9 @@ class MatchLSTM(nn.Module):
     H = torch.cat((Hf, Hb), dim=-1)
     return H
 
-  # Get a passage-aware question representation.
-  def match_passage_question(self, layer_no, Hqi, Hp, max_question_len,
-                             question_lens, batch_size):
-    # Initial hidden and cell states for forward and backward LSTMs.
-    # h{f,b}.shape = (batch, hdim/2)
-    hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
-    hb, cb = self.get_initial_lstm(batch_size, self.hidden_size // 2)
-
-    # Get vectors zi for each i in passage.
-    # Attended passage is the same at each time step. Just compute it once.
-    # attended_passage.shape = (seq_len, batch, hdim)
-    attended_passage = getattr(self, 'attend_passage_for_question_' + layer_no)(Hp)
-    Hf, Hb = [], []
-    for i in range(max_question_len):
-        forward_idx = i
-        backward_idx = max_question_len-i-1
-        # g{f,b}.shape = (seq_len, batch, hdim)
-        gf = f.tanh(attended_passage + \
-                (getattr(self, 'attend_question_for_question_' + layer_no)(Hqi[forward_idx]) + \
-                 getattr(self, 'attend_question_hidden_' + layer_no)(hf)))
-        gb = f.tanh(attended_passage + \
-                (getattr(self, 'attend_question_for_question_' + layer_no)(Hqi[backward_idx]) + \
-                 getattr(self, 'attend_question_hidden_' + layer_no)(hb)))
-
-        # alpha_{f,g}.shape = (seq_len, batch, 1)
-        alpha_f = f.softmax(getattr(self, 'question_alpha_transform_' + layer_no)(gf),
-                            dim=0)
-        alpha_b = f.softmax(getattr(self, 'question_alpha_transform_' + layer_no)(gb),
-                            dim=0)
-
-        # Hq[{forward,backward}_idx].shape = (batch, hdim)
-        # Hp = (seq_len, batch, hdim)
-        # weighted_Hp_f.shape = (batch, hdim)
-        weighted_Hp_f = torch.squeeze(torch.bmm(alpha_f.permute(1, 2, 0),
-                                      torch.transpose(Hp, 0, 1)), dim=1)
-        weighted_Hp_b = torch.squeeze(torch.bmm(alpha_b.permute(1, 2, 0),
-                                      torch.transpose(Hp, 0, 1)), dim=1)
-
-        # z{f,b}.shape = (batch, 2 * hdim)
-        zf = torch.cat((Hqi[forward_idx], weighted_Hp_f), dim=-1)
-        zb = torch.cat((Hqi[backward_idx], weighted_Hp_b), dim=-1)
-
-        # Mask vectors for {z,h,c}{f,b}.
-        mask_f = np.array([ [1.0] if forward_idx < question_lens[i] else [0.0] \
-                              for i in range(batch_size) ])
-        mask_b = np.array([ [1.0] if backward_idx < question_lens[i] else [0.0] \
-                              for i in range(batch_size) ])
-        mask_f = self.placeholder(mask_f)
-        mask_b = self.placeholder(mask_b)
-        zf = zf * mask_f
-        zb = zb * mask_b
-
-        # Take forward and backward LSTM steps, with zf and zb as inputs.
-        hf, cf = getattr(self, 'question_match_lstm_' + layer_no)(zf, (hf, cf))
-        hb, cb = getattr(self, 'question_match_lstm_' + layer_no)(zb, (hb, cb))
-
-        # Back to initial zero states for padded regions.
-        hf = hf * mask_f
-        cf = cf * mask_f
-        hb = hb * mask_b
-        cb = cb * mask_b
-
-        # Append hidden states to create Hf and Hb matrices.
-        # h{f,b}.shape = (batch, hdim / 2)
-        Hf.append(hf)
-        Hb.append(hb)
-
-    # H{f,b}.shape = (seq_len, batch, hdim / 2)
-    Hb = Hb[::-1]
-    Hf = torch.stack(Hf, dim=0)
-    Hb = torch.stack(Hb, dim=0)
-
-    # Hr.shape = (seq_len, batch, hdim)
-    Hr = torch.cat((Hf, Hb), dim=-1)
-    return Hr
-
   # Get a question-aware passage representation.
   def match_question_passage(self, layer_no, Hpi, Hq, max_passage_len,
-                             passage_lens, batch_size):
+                             passage_lens, batch_size, mask):
     # Initial hidden and cell states for forward and backward LSTMs.
     # h{f,b}.shape = (batch, hdim / 2)
     hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
@@ -351,25 +253,15 @@ class MatchLSTM(nn.Module):
         zf = torch.cat((Hpi[forward_idx], weighted_Hq_f), dim=-1)
         zb = torch.cat((Hpi[backward_idx], weighted_Hq_b), dim=-1)
 
-        # Mask vectors for {z,h,c}{f,b}.
-        mask_f = np.array([ [1.0] if forward_idx < passage_lens[i] else [0.0] \
-                              for i in range(batch_size) ])
-        mask_b = np.array([ [1.0] if backward_idx < passage_lens[i] else [0.0] \
-                              for i in range(batch_size) ])
-        mask_f = self.placeholder(mask_f)
-        mask_b = self.placeholder(mask_b)
-        zf = zf * mask_f
-        zb = zb * mask_b
-
         # Take forward and backward LSTM steps, with zf and zb as inputs.
         hf, cf = getattr(self, 'passage_match_lstm_' + layer_no)(zf, (hf, cf))
         hb, cb = getattr(self, 'passage_match_lstm_' + layer_no)(zb, (hb, cb))
 
         # Back to initial zero states for padded regions.
-        hf = hf * mask_f
-        cf = cf * mask_f
-        hb = hb * mask_b
-        cb = cb * mask_b
+        hf = hf * mask[forward_idx]
+        cf = cf * mask[forward_idx]
+        hb = hb * mask[backward_idx]
+        cb = cb * mask[backward_idx]
 
         # Append hidden states to create Hf and Hb matrices.
         # h{f,b}.shape = (batch, hdim / 2)
@@ -396,9 +288,14 @@ class MatchLSTM(nn.Module):
 
     # weighted_Hq.shape = (batch, hdim)
     attended_question = f.tanh(getattr(self, 'attend_question_' + layer_no)(Hq))
-    alpha_q = f.softmax(getattr(self, 'alpha_transform_' + layer_no)(attended_question), dim=0)
+    alpha_q = f.softmax(getattr(self, 'alpha_transform_' + layer_no)(attended_question),
+                        dim=0)
     weighted_Hq = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
                                           torch.transpose(Hq, 0, 1)), dim=1)
+
+    # Additions to the attention equation that remain constant through time steps.
+    question_input = attended_input + weighted_Hq
+    question_input_b = attended_input_b + weighted_Hq
 
     # {h,c}{a,b}.shape = (batch, hdim / 2)
     ha, ca = self.get_initial_lstm(batch_size, self.hidden_size // 2)
@@ -416,12 +313,10 @@ class MatchLSTM(nn.Module):
     # 3rd step predicts end/start distributions in 1/2 respectively.
     for k in range(3):
       # Fk[_b].shape = (seq_len, batch, hdim)
-      Fk = f.tanh(attended_input + \
-                  getattr(self, 'attend_answer_' + layer_no)(ha) + \
-                  weighted_Hq)
-      Fk_b = f.tanh(attended_input_b + \
-                    getattr(self, 'attend_answer_' + layer_no)(hb) + \
-                    weighted_Hq)
+      Fk = f.tanh(question_input + \
+                  getattr(self, 'attend_answer_' + layer_no)(ha))
+      Fk_b = f.tanh(question_input_b + \
+                    getattr(self, 'attend_answer_' + layer_no)(hb))
 
       # beta_k[_b]_scores.shape = (seq_len, batch, 1)
       beta_ks = []
@@ -451,6 +346,11 @@ class MatchLSTM(nn.Module):
       # Store distributions produced at each step.
       answer_distributions.append(torch.t(torch.squeeze(beta_k, dim=-1)))
       answer_distributions_b.append(torch.t(torch.squeeze(beta_k_b, dim=-1)))
+
+      # Only the first two steps of the answer pointer are useful beyond
+      # this point.
+      if k >= 2:
+        break
 
       # weighted_Hr.shape = (batch, hdim)
       weighted_Hr = torch.squeeze(torch.bmm(beta_k.permute(1, 2, 0),
@@ -487,10 +387,9 @@ class MatchLSTM(nn.Module):
       ha, ca = getattr(self, 'answer_pointer_lstm_' + layer_no)(af, (ha, ca))
       hb, cb = getattr(self, 'answer_pointer_lstm_' + layer_no)(ab, (hb, cb))
 
-      # Only store the first two hidden states.
-      if k < 2:
-        Hf.append(ha)
-        Hb.append(hb)
+      # Store the hidden states.
+      Hf.append(ha)
+      Hb.append(hb)
 
     # H{f,b}.shape = (2, batch, hdim / 2)
     Hf = torch.stack(Hf, dim=0)
@@ -549,18 +448,33 @@ class MatchLSTM(nn.Module):
           answer_distributions_b[2][idx, answer[0][idx]]))
 
     # Compute the loss.
-    loss_f1_f = -torch.log(
-                    (torch.bmm(torch.unsqueeze(answer_distributions[0], -1),
-                               torch.unsqueeze(answer_distributions[1], 1)) * \
-		                 f1_matrices).view(batch_size, -1).sum(1)).sum()
-    loss_f1_b = -torch.log(
-                    (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
-                               torch.unsqueeze(answer_distributions_b[0], 1)) * \
-		                 f1_matrices).view(batch_size, -1).sum(1)).sum()
+    if self.f1_loss_ratio > 0:
+      loss_f1_f = -torch.log(
+                      (torch.bmm(torch.unsqueeze(answer_distributions[0], -1),
+                                 torch.unsqueeze(answer_distributions[1], 1)) * \
+                       f1_matrices).view(batch_size, -1).sum(1)).sum()
+      loss_f1_b = -torch.log(
+                      (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
+                                 torch.unsqueeze(answer_distributions_b[0], 1)) * \
+                       f1_matrices).view(batch_size, -1).sum(1)).sum()
+    else:
+      loss_f1_f = 0.0
+      loss_f1_b = 0.0
     loss = self.f1_loss_ratio * (loss_f1_f + loss_f1_b) + \
            (1 - self.f1_loss_ratio) * (sum(mle_losses)/2.0)
     loss /= batch_size
     return answer_distributions[1:], answer_distributions_b[1:], loss
+
+  # Get matrix for padding hidden states of an LSTM running over the
+  # given maximum length, for lengths in the batch.
+  def get_mask_matrix(self, batch_size, max_len, lens):
+    mask_matrix = []
+    for t in range(max_len):
+      mask = np.array([ [1.0] if t < lens[i] else [0.0] \
+                            for i in range(batch_size) ])
+      mask = self.placeholder(mask)
+      mask_matrix.append(mask)
+    return mask_matrix
 
   # Forward pass method.
   # passage = tuple((seq_len, batch), len_within_batch)
@@ -581,6 +495,9 @@ class MatchLSTM(nn.Module):
     question_lens = question[1]
     f1_mat = self.placeholder(f1_matrices)
 
+    mask_p = self.get_mask_matrix(batch_size, max_passage_len, passage_lens)
+    mask_q = self.get_mask_matrix(batch_size, max_question_len, question_lens)
+
     # Get embedded passage and question representations.
     if not self.use_glove:
       p = torch.transpose(self.embedding(torch.t(padded_passage)), 0, 1)
@@ -600,32 +517,19 @@ class MatchLSTM(nn.Module):
     for layer_no in range(self.num_preprocessing_layers):
       Hp = getattr(self, 'dropoutp_' + str(layer_no))(Hp)
       Hp = self.preprocess_input(str(layer_no), Hp, max_passage_len, passage_lens,
-                                 batch_size)
+                                 batch_size, mask_p)
 
     Hq = q
     for layer_no in range(self.num_preprocessing_layers):
       Hq = getattr(self, 'dropoutq_' + str(layer_no))(Hq)
       Hq = self.preprocess_input(str(layer_no), Hq, max_question_len, question_lens,
-                                 batch_size)
-
-    # Bi-directional multi-layer MatchLSTM for passage-aware question representation.
-    # Hq_aware.shape = (seq_len, batch, hdim)
-    Hq_aware = Hq
-    for layer_no in range(self.num_question_matchlstm_layers):
-      Hq_aware = self.match_passage_question(str(layer_no), Hq_aware, Hp,
-                                             max_question_len, question_lens,
-                                             batch_size)
-      # Passage-aware question representation dropout.
-      Hq_aware = getattr(self, 'dropout_question_matchlstm_' + str(layer_no))(Hq_aware)
-
-    # Hq.shape = (seq_len, batch, hdim)
-    Hq = Hq_aware
+                                 batch_size, mask_q)
 
     # Bi-directional multi-layer MatchLSTM for question-aware passage representation.
     Hr = Hp
     for layer_no in range(self.num_passage_matchlstm_layers):
       Hr = self.match_question_passage(str(layer_no), Hr, Hq, max_passage_len,
-                                       passage_lens, batch_size)
+                                       passage_lens, batch_size, mask_p)
       # Question-aware passage representation dropout.
       Hr = getattr(self, 'dropout_passage_matchlstm_' + str(layer_no))(Hr)
 
