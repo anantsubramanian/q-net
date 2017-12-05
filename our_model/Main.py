@@ -38,7 +38,7 @@ def init_parser():
   parser.add_argument('--epochs', type=int, default=50)
   parser.add_argument('--model_dir', default='./')
   parser.add_argument('--batch_size', type=int, default=64)
-  parser.add_argument('--test_batch_size', type=int, default=128)
+  parser.add_argument('--test_batch_size', type=int, default=32)
   parser.add_argument('--optimizer', default='Adamax') # 'SGD' or 'Adamax'
   parser.add_argument('--debug', action='store_true')
   parser.add_argument('--dropout', type=float, default=0.4)
@@ -200,7 +200,8 @@ def get_batch_answers(args, batch, all_predictions, distributions, data):
   # Get numpy arrays out of the CUDA tensors.
   for i in range(len(distributions)):
     for j in range(len(distributions[i])):
-      distributions[i][j] = distributions[i][j].data.cpu().numpy()
+      for k in range(len(distributions[i][j])):
+        distributions[i][j][k] = distributions[i][j][k].data.cpu().numpy()
 
   # Add all batch qids to predictions dict, if they don't already exist.
   qids = [ example[2] for example in batch ]
@@ -217,21 +218,22 @@ def get_batch_answers(args, batch, all_predictions, distributions, data):
   mle = 0
   f1 = 1
   best_idxs = []
+  # distributions => (mle/f1,forward/backward,start/end,batch,values). Phew!
   for idx in range(len(batch)):
     best_prob = -1
     best = [0, 0]
     max_end = paras_lens_in[idx]
-    for j, start_prob in enumerate(distributions[mle][0][idx][:max_end]):
+    for j, start_prob in enumerate(distributions[mle][0][0][idx][:max_end]):
       cur_end_idx = max_end if args.max_answer_span == -1 \
                             else j + args.max_answer_span
-      end_idx = np.argmax(distributions[mle][1][idx][j:cur_end_idx] * \
-                          distributions_b[mle][0][idx][j:cur_end_idx] * \
-                          distributions[f1][1][idx][j:cur_end_idx] * \
-                          distributions_b[f1][0][idx][j:cur_end_idx])
-      prob = distributions[mle][1][idx][j+end_idx] * start_prob \
-             * distributions_b[mle][1][idx][j] * distributions_b[mle][0][idx][j+end_idx] \
-             * distributions[f1][1][idx][j+end_idx] * distributions[f1][0][idx][j] \
-             * distributions_b[f1][1][idx][j] * distributions_b[f1][0][idx][j+end_idx]
+      end_idx = np.argmax(distributions[mle][0][1][idx][j:cur_end_idx] * \
+                          distributions[mle][1][0][idx][j:cur_end_idx] * \
+                          distributions[f1][0][1][idx][j:cur_end_idx] * \
+                          distributions[f1][1][0][idx][j:cur_end_idx])
+      prob = distributions[mle][0][1][idx][j+end_idx] * start_prob \
+             * distributions[mle][1][1][idx][j] * distributions[mle][1][0][idx][j+end_idx] \
+             * distributions[f1][0][1][idx][j+end_idx] * distributions[f1][0][0][idx][j] \
+             * distributions[f1][1][1][idx][j] * distributions[f1][1][0][idx][j+end_idx]
       if prob > best_prob:
         best_prob = prob
         best = [j, j+end_idx]
