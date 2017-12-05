@@ -27,27 +27,26 @@ def init_parser():
   parser.add_argument('--max_train_articles', type=int, default=-1)
   parser.add_argument('--max_dev_articles', type=int, default=-1)
   parser.add_argument('--embed_size', type=int, default=300)
-  parser.add_argument('--hidden_size', type=int, default=150)
+  parser.add_argument('--hidden_size', type=int, default=300)
   parser.add_argument('--attention_size', type=int, default=150)
-  parser.add_argument('--learning_rate', type=float, default=0.005)
-  parser.add_argument('--decay_rate', type=float, default=0.95)
+  parser.add_argument('--learning_rate', type=float, default=0.01)
+  parser.add_argument('--decay_rate', type=float, default=0.90)
   parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt')
   parser.add_argument('--disable_glove', action='store_true')
   parser.add_argument('--ckpt', type=int, default=0)
   parser.add_argument('--model_file')
-  parser.add_argument('--epochs', type=int, default=25)
+  parser.add_argument('--epochs', type=int, default=50)
   parser.add_argument('--model_dir', default='./')
-  parser.add_argument('--batch_size', type=int, default=32)
-  parser.add_argument('--test_batch_size', type=int, default=32)
+  parser.add_argument('--batch_size', type=int, default=64)
+  parser.add_argument('--test_batch_size', type=int, default=128)
   parser.add_argument('--optimizer', default='Adamax') # 'SGD' or 'Adamax'
   parser.add_argument('--debug', action='store_true')
   parser.add_argument('--dropout', type=float, default=0.4)
   parser.add_argument('--cuda', action='store_true')
   parser.add_argument('--max_answer_span', type=int, default=15)
-  parser.add_argument('--use_greedy', action='store_true')
-  parser.add_argument('--f1_loss_ratio', type=float, default=0.75)
   parser.add_argument('--num_preprocessing_layers', type=int, default=2)
   parser.add_argument('--num_matchlstm_layers', type=int, default=2)
+  parser.add_argument('--f1_loss_multiplier', type=float, default=2.0)
   parser.add_argument('--model_description')
   return parser
 
@@ -78,7 +77,7 @@ def read_and_process_data(args):
   dev_tokenized_paras = dev_data.tokenized_paras
   test_tokenized_paras = dev_data.tokenized_paras
 
-  # Sort data by increasing question+answer length, for efficient batching.
+  # Sort data by increasing passage+question, for efficient batching.
   # Data format = (tokenized_question, tokenized_answer, question_id).
   print "Sorting datasets in decreasing order of (para + question) lengths."
   train.sort(cmp=lambda x,y:\
@@ -101,7 +100,8 @@ def read_and_process_data(args):
     dev = dev[:320]
     test = test[:320]
 
-  train_order = [ i for i in range(0, len(train), batch_size) ]
+  train_order = [ (i,x) for i in range(0, len(train), batch_size) \
+                    for x in ["0", "1"] ]
   dev_order = [ i for i in range(0, len(dev), test_batch_size) ]
   test_order = [ i for i in range(0, len(test), test_batch_size) ]
   print "Done."
@@ -115,7 +115,6 @@ def read_and_process_data(args):
 
 #------------------------------ Create model ----------------------------------#
 def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
-  assert args.f1_loss_ratio <= 1.0, "F1 loss ratio must be less than 1.0"
   config = { 'embed_size' : args.embed_size,
              'vocab_size' : vocab_size,
              'hidden_size' : args.hidden_size,
@@ -131,7 +130,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
              'word_to_index': word_to_index,
              'cuda': args.cuda,
              'num_pos_tags': num_pos_tags,
-             'f1_loss_ratio': args.f1_loss_ratio,
+             'f1_loss_multiplier': args.f1_loss_multiplier,
              'num_preprocessing_layers': args.num_preprocessing_layers,
              'num_matchlstm_layers': args.num_matchlstm_layers }
   print "Building model."
@@ -197,8 +196,12 @@ def get_batch(batch, ques_to_para, tokenized_paras, paras_tags, num_tags):
 
 
 #--------------- Get the answers from predicted distributions------------------#
-def get_batch_answers(args, batch, all_predictions, distributions,
-                      distributions_b, data):
+def get_batch_answers(args, batch, all_predictions, distributions, data):
+  # Get numpy arrays out of the CUDA tensors.
+  for i in range(len(distributions)):
+    for j in range(len(distributions[i])):
+      distributions[i][j] = distributions[i][j].data.cpu().numpy()
+
   # Add all batch qids to predictions dict, if they don't already exist.
   qids = [ example[2] for example in batch ]
   for qid in qids:
@@ -211,33 +214,28 @@ def get_batch_answers(args, batch, all_predictions, distributions,
                  for example in batch ]
   paras_lens_in = [ len(para) for para in paras_in ]
 
-  # Search, or be greedy?
-  if not args.use_greedy:
-    best_idxs = []
-    for idx in range(len(batch)):
-      best_prob = -1
-      best = [0, 0]
-      max_end = paras_lens_in[idx]
-      for j, start_prob in enumerate(distributions[0][idx][:max_end]):
-        cur_end_idx = max_end if args.max_answer_span == -1 \
-                              else j + args.max_answer_span
-        end_idx = np.argmax(distributions[1][idx][j:cur_end_idx] * \
-                            distributions_b[0][idx][j:cur_end_idx])
-        prob = distributions[1][idx][j+end_idx] * start_prob \
-               * distributions_b[1][idx][j] * distributions_b[0][idx][j+end_idx]
-        if prob > best_prob:
-          best_prob = prob
-          best = [j, j+end_idx]
-      best_idxs.append(best)
-  else:
-    best_idxs = []
-    for idx in range(len(batch)):
-      start = np.argmax(distributions[0][idx])
-      end_idx = paras_lens_in[idx] if args.max_answer_span == -1 \
-                                   else start + args.max_answer_span
-      end = np.argmax(distributions[1][idx][start:end_idx] * \
-                      distributions_b[0][idx][j:cur_end_idx])
-      best_idxs.append([start, start+end])
+  mle = 0
+  f1 = 1
+  best_idxs = []
+  for idx in range(len(batch)):
+    best_prob = -1
+    best = [0, 0]
+    max_end = paras_lens_in[idx]
+    for j, start_prob in enumerate(distributions[mle][0][idx][:max_end]):
+      cur_end_idx = max_end if args.max_answer_span == -1 \
+                            else j + args.max_answer_span
+      end_idx = np.argmax(distributions[mle][1][idx][j:cur_end_idx] * \
+                          distributions_b[mle][0][idx][j:cur_end_idx] * \
+                          distributions[f1][1][idx][j:cur_end_idx] * \
+                          distributions_b[f1][0][idx][j:cur_end_idx])
+      prob = distributions[mle][1][idx][j+end_idx] * start_prob \
+             * distributions_b[mle][1][idx][j] * distributions_b[mle][0][idx][j+end_idx] \
+             * distributions[f1][1][idx][j+end_idx] * distributions[f1][0][idx][j] \
+             * distributions_b[f1][1][idx][j] * distributions_b[f1][0][idx][j+end_idx]
+      if prob > best_prob:
+        best_prob = prob
+        best = [j, j+end_idx]
+    best_idxs.append(best)
 
   answers = [ tokenized_paras[ques_to_para[qids[idx]]][start:end+1] \
                 for idx, (start, end) in enumerate(best_idxs) ]
@@ -304,7 +302,7 @@ def train_model(args):
     start_t = time.time()
     train_loss_sum = 0.0
     model.train()
-    for i, num in enumerate(train_order):
+    for i, (num, network_id) in enumerate(train_order):
       print "\rTrain epoch %d, %.2f s - (Done %d of %d)" %\
             (EPOCH, (time.time()-start_t)*(len(train_order)-i-1)/(i+1), i+1,
              len(train_order)),
@@ -315,19 +313,18 @@ def train_model(args):
       # Zero previous gradient.
       model.zero_grad()
 
-      # Stochastically train on either the sentence or answer prediction task in each
-      # minibatch.
+      # Predict on the network_id assigned to this minibatch.
       model(*get_batch(train_batch, train_ques_to_para, train_tokenized_paras,
                        train_data.paras_tags, num_pos_tags),
-            network_no = random.randint(0, 1))
+            networks = [network_id])
       model.loss.backward()
       optimizer.step()
       train_loss_sum += model.loss.data[0]
-      del model.loss
 
-      print "Loss: %.5f (in time %.2fs)" % \
-            (train_loss_sum/(i+1), time.time() - start_t),
+      print "Loss Total: %.5f, Cur: %.5f (in time %.2fs)" % \
+            (train_loss_sum/(i+1), model.loss.data[0], time.time() - start_t),
       sys.stdout.flush()
+      del model.loss
 
     print "\nLoss: %.5f (in time %.2fs)" % \
           (train_loss_sum/len(train_order), time.time() - start_t)
@@ -357,22 +354,19 @@ def train_model(args):
 
       dev_batch = dev[num:num+test_batch_size]
 
-      # distributions[{0,1}].shape = (batch, max_passage_len)
-      distributions, distributions_b = \
+      # distributions[{0,1}][{0,1}].shape = (batch, max_passage_len)
+      # Predict using both networks.
+      distributions = \
         model(*get_batch(dev_batch, dev_ques_to_para, dev_tokenized_paras,
                          dev_data.paras_tags, num_pos_tags),
-              network_no = 1)
-      distributions[0] = distributions[0].data.cpu().numpy()
-      distributions[1] = distributions[1].data.cpu().numpy()
-      distributions_b[0] = distributions_b[0].data.cpu().numpy()
-      distributions_b[1] = distributions_b[1].data.cpu().numpy()
+              networks = ["0", "1"])
 
       # Add predictions to all answers.
       get_batch_answers(args, dev_batch, all_predictions, distributions,
-                        distributions_b, dev_data)
+                        dev_data)
 
       dev_loss_sum += model.loss.data[0]
-      print "[Average loss : %.5f]" % (dev_loss_sum/(i+1)),
+      print "[Average loss : %.5f, Cur: %.5f]" % (dev_loss_sum/(i+1), model.loss.data[0]),
       sys.stdout.flush()
       del model.loss
 
@@ -431,30 +425,27 @@ def test_model(args):
     test_batch = test[num:num+test_batch_size]
     batch_size = len(test_batch)
 
-    # distributions[{0,1}].shape = (batch, max_passage_len)
-    distributions, distributions_b = \
+    # distributions[{0,1}][{0,1}].shape = (batch, max_passage_len)
+    distributions = \
         model(*get_batch(test_batch, test_ques_to_para, test_tokenized_paras,
                          test_data.paras_tags, num_pos_tags),
-              network_no = 1)
-    distributions[0] = distributions[0].data.cpu().numpy()
-    distributions[1] = distributions[1].data.cpu().numpy()
-    distributions_b[0] = distributions_b[0].data.cpu().numpy()
-    distributions_b[1] = distributions_b[1].data.cpu().numpy()
+              networks = ["0", "1"])
 
     # Add predictions to all answers.
-    get_batch_answers(args, test_batch, all_predictions, distributions,
-                      distributions_b, test_data)
+    get_batch_answers(args, test_batch, all_predictions, distributions, test_data)
 
-    # Dump start and end attention distributions.
+    # Dump start and end attention distributions from "0" id network.
+    ans_in = np.array([ example[1] for example in test_batch ]).T
+    qids = [ example[2] for example in test_batch ]
     for idx in range(batch_size):
       if qids[idx] in attention_starts:
         attention_starts[qids[idx]][1].append(ans_in[0][idx])
       else:
-        attention_starts[qids[idx]] = (distributions[0][idx], [ans_in[0][idx]])
+        attention_starts[qids[idx]] = (distributions[0][0][idx], [ans_in[0][idx]])
       if qids[idx] in attention_ends:
         attention_ends[qids[idx]][1].append(ans_in[0][idx])
       else:
-        attention_ends[qids[idx]] = (distributions[1][idx], [ans_in[1][idx]])
+        attention_ends[qids[idx]] = (distributions[0][1][idx], [ans_in[1][idx]])
 
     test_loss_sum += model.loss.data[0]
     print "[Average loss : %.5f]" % (test_loss_sum/(i+1)),

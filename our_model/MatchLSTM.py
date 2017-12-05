@@ -34,8 +34,8 @@ class MatchLSTM(nn.Module):
     self.use_glove = config['use_glove']
     self.use_cuda = config['cuda']
     self.dropout = config['dropout']
+    self.f1_loss_multiplier = config['f1_loss_multiplier']
     self.num_pos_tags = config['num_pos_tags']
-    self.f1_loss_ratio = config['f1_loss_ratio']
     self.num_preprocessing_layers = config['num_preprocessing_layers']
     self.num_matchlstm_layers = config['num_matchlstm_layers']
 
@@ -328,9 +328,10 @@ class MatchLSTM(nn.Module):
       beta_k = torch.stack(beta_ks, dim=1)
       beta_k_b = torch.stack(beta_k_bs, dim=1)
 
-      # Store distributions produced at each step.
-      answer_distributions.append(torch.t(torch.squeeze(beta_k, dim=-1)))
-      answer_distributions_b.append(torch.t(torch.squeeze(beta_k_b, dim=-1)))
+      # Store distributions produced at start and end prediction steps.
+      if k > 0:
+        answer_distributions.append(torch.t(torch.squeeze(beta_k, dim=-1)))
+        answer_distributions_b.append(torch.t(torch.squeeze(beta_k_b, dim=-1)))
 
       # Only the first two steps of the answer pointer are useful beyond
       # this point.
@@ -356,48 +357,49 @@ class MatchLSTM(nn.Module):
   # Boundary pointer model, that gives probability distributions over the
   # answer start and answer end indices. Additionally returns the loss
   # for training.
-  # "network_no" parameter decides which network to train in this step,
-  # one of either the sentence prediction or the answer prediction network.
-  def point_at_answer(self, network_no, Hr, Hp, Hq, max_question_len,
+  # "networks" parameter decides which networks to train in this step.
+  # "0" corresponds to the MLE loss network, while "1" corresponds to the
+  # F1 loss network.
+  def point_at_answer(self, networks, Hr, Hp, Hq, max_question_len,
                       question_lens, max_passage_len, passage_lens, batch_size,
                       answer, f1_matrices):
-    mle_losses = []
     # Predict the answer start and end indices.
-    answer_distributions, answer_distributions_b = \
-      self.answer_pointer(network_no, Hr, Hp, Hq, max_question_len,
-                          question_lens, max_passage_len, passage_lens,
-                          batch_size)
+    distributions = []
+    for network_id in networks:
+      distributions.append(
+        self.answer_pointer(network_id, Hr, Hp, Hq, max_question_len,
+                            question_lens, max_passage_len, passage_lens,
+                            batch_size))
 
-    # For each example in the batch, add the negative log of answer start
-    # and end index probabilities to the MLE loss, from both forward and
-    # backward answer pointers.
-    for idx in range(batch_size):
-      mle_losses.append(-torch.log(
-          answer_distributions[1][idx, answer[0][idx]]))
-      mle_losses.append(-torch.log(
-          answer_distributions[2][idx, answer[1][idx]]))
-      mle_losses.append(-torch.log(
-          answer_distributions_b[1][idx, answer[1][idx]]))
-      mle_losses.append(-torch.log(
-          answer_distributions_b[2][idx, answer[0][idx]]))
-
-    # Compute the loss.
-    if self.f1_loss_ratio > 0:
+    loss = 0.0
+    if "0" in networks:
+      zero_idx = networks.index("0")
+      # For each example in the batch, add the negative log of answer start
+      # and end index probabilities to the MLE loss, from both forward and
+      # backward answer pointers.
+      mle_losses = []
+      for idx in range(batch_size):
+        mle_losses.extend([
+          -torch.log(distributions[zero_idx][0][0][idx, answer[0][idx]]),
+          -torch.log(distributions[zero_idx][0][1][idx, answer[1][idx]]),
+          -torch.log(distributions[zero_idx][1][0][idx, answer[1][idx]]),
+          -torch.log(distributions[zero_idx][1][1][idx, answer[0][idx]])])
+      loss += sum(mle_losses) / 2.0
+    elif "1" in networks:
+      one_idx = networks.index("1")
+      # Compute the F1 distribution loss.
       loss_f1_f = -torch.log(
-                      (torch.bmm(torch.unsqueeze(answer_distributions[0], -1),
-                                 torch.unsqueeze(answer_distributions[1], 1)) * \
+                      (torch.bmm(torch.unsqueeze(distributions[one_idx][0][0], -1),
+                                 torch.unsqueeze(distributions[one_idx][0][1], 1)) * \
                        f1_matrices).view(batch_size, -1).sum(1)).sum()
       loss_f1_b = -torch.log(
-                      (torch.bmm(torch.unsqueeze(answer_distributions_b[1], -1),
-                                 torch.unsqueeze(answer_distributions_b[0], 1)) * \
+                      (torch.bmm(torch.unsqueeze(distributions[one_idx][1][1], -1),
+                                 torch.unsqueeze(distributions[one_idx][1][0], 1)) * \
                        f1_matrices).view(batch_size, -1).sum(1)).sum()
-    else:
-      loss_f1_f = 0.0
-      loss_f1_b = 0.0
-    loss = self.f1_loss_ratio * (loss_f1_f + loss_f1_b) + \
-           (1 - self.f1_loss_ratio) * sum(mle_losses)
-    loss /= batch_size
-    return answer_distributions[1:], answer_distributions_b[1:], loss
+      loss += self.f1_loss_multiplier * (loss_f1_f + loss_f1_b) / 2.0
+
+    loss /= (batch_size * len(networks))
+    return distributions, loss
 
   # Get matrix for padding hidden states of an LSTM running over the
   # given maximum length, for lengths in the batch.
@@ -418,7 +420,7 @@ class MatchLSTM(nn.Module):
   # question_pos_tags = (seq_len, batch, num_pos_tags)
   # passage_pos_tags = (seq_len, batch, num_pos_tags)
   def forward(self, passage, question, answer, f1_matrices, question_pos_tags,
-              passage_pos_tags, answer_sentence, network_no):
+              passage_pos_tags, answer_sentence, networks):
     if not self.use_glove:
       padded_passage = self.placeholder(passage[0], False)
       padded_question = self.placeholder(question[0], False)
@@ -470,12 +472,11 @@ class MatchLSTM(nn.Module):
     # Get probability distributions over the answer start, answer end,
     # and the loss for training.
     # At this point, Hr.shape = (seq_len, batch, hdim)
-    answer_input = answer_sentence if network_no == 0 else answer
-    answer_distributions, answer_distributions_b, loss = \
-      self.point_at_answer(str(network_no), Hr, Hp, Hq, max_question_len,
+    answer_distributions_list, loss = \
+      self.point_at_answer(networks, Hr, Hp, Hq, max_question_len,
                            question_lens, max_passage_len, passage_lens,
-                           batch_size, answer_input, f1_mat)
+                           batch_size, answer, f1_mat)
 
     self.loss = loss
-    return answer_distributions, answer_distributions_b
+    return answer_distributions_list
 
