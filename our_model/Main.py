@@ -312,8 +312,12 @@ def train_model(args):
 
       # Zero previous gradient.
       model.zero_grad()
+
+      # Stochastically train on either the sentence or answer prediction task in each
+      # minibatch.
       model(*get_batch(train_batch, train_ques_to_para, train_tokenized_paras,
-                       train_data.paras_tags, num_pos_tags))
+                       train_data.paras_tags, num_pos_tags),
+            network_no = random.randint(0, 1))
       model.loss.backward()
       optimizer.step()
       train_loss_sum += model.loss.data[0]
@@ -354,7 +358,8 @@ def train_model(args):
       # distributions[{0,1}].shape = (batch, max_passage_len)
       distributions, distributions_b = \
         model(*get_batch(dev_batch, dev_ques_to_para, dev_tokenized_paras,
-                         dev_data.paras_tags, num_pos_tags))
+                         dev_data.paras_tags, num_pos_tags),
+              network_no = 1)
       distributions[0] = distributions[0].data.cpu().numpy()
       distributions[1] = distributions[1].data.cpu().numpy()
       distributions_b[0] = distributions_b[0].data.cpu().numpy()
@@ -427,7 +432,8 @@ def test_model(args):
     # distributions[{0,1}].shape = (batch, max_passage_len)
     distributions, distributions_b = \
         model(*get_batch(test_batch, test_ques_to_para, test_tokenized_paras,
-                         test_data.paras_tags, num_pos_tags))
+                         test_data.paras_tags, num_pos_tags),
+              network_no = 1)
     distributions[0] = distributions[0].data.cpu().numpy()
     distributions[1] = distributions[1].data.cpu().numpy()
     distributions_b[0] = distributions_b[0].data.cpu().numpy()
