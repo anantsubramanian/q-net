@@ -36,7 +36,6 @@ class MatchLSTM(nn.Module):
     self.num_pos_tags = config['num_pos_tags']
     self.f1_loss_ratio = config['f1_loss_ratio']
     self.num_preprocessing_layers = config['num_preprocessing_layers']
-    self.num_question_matchlstm_layers = config['num_question_matchlstm_layers']
     self.num_passage_matchlstm_layers = config['num_passage_matchlstm_layers']
 
   def build_model(self, debug):

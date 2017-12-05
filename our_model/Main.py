@@ -46,7 +46,6 @@ def init_parser():
   parser.add_argument('--use_greedy', action='store_true')
   parser.add_argument('--f1_loss_ratio', type=float, default=0.75)
   parser.add_argument('--num_preprocessing_layers', type=int, default=2)
-  parser.add_argument('--num_question_matchlstm_layers', type=int, default=2)
   parser.add_argument('--num_passage_matchlstm_layers', type=int, default=2)
   parser.add_argument('--model_description')
   return parser
@@ -132,7 +131,6 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
              'num_pos_tags': num_pos_tags,
              'f1_loss_ratio': args.f1_loss_ratio,
              'num_preprocessing_layers': args.num_preprocessing_layers,
-             'num_question_matchlstm_layers': args.num_question_matchlstm_layers,
              'num_passage_matchlstm_layers': args.num_passage_matchlstm_layers }
   print "Building model."
   model = MatchLSTM(config, args.debug)
