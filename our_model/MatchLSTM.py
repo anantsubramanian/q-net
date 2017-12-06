@@ -213,17 +213,20 @@ class MatchLSTM(nn.Module):
     # Attended question is the same at each time step. Just compute it once.
     # attended_question.shape = (seq_len, batch, hdim)
     attended_question = getattr(self, 'attend_question_for_passage_' + layer_no)(Hq)
+    attended_passage = getattr(self, 'attend_passage_for_passage_' + layer_no)(Hpi)
+    attention_q_plus_p = []
+    for t in range(max_passage_len):
+      attention_q_plus_p.append(attended_question + attended_passage[t])
+    transposed_Hq = torch.transpose(Hq, 0, 1)
     Hf, Hb = [], []
     for i in range(max_passage_len):
         forward_idx = i
         backward_idx = max_passage_len-i-1
         # g{f,b}.shape = (seq_len, batch, hdim)
-        gf = f.tanh(attended_question + \
-                (getattr(self, 'attend_passage_for_passage_' + layer_no)(Hpi[forward_idx]) + \
-                 getattr(self, 'attend_passage_hidden_' + layer_no)(hf)))
-        gb = f.tanh(attended_question + \
-                (getattr(self, 'attend_passage_for_passage_' + layer_no)(Hpi[backward_idx]) + \
-                 getattr(self, 'attend_passage_hidden_' + layer_no)(hb)))
+        gf = f.tanh(attention_q_plus_p[forward_idx] + \
+                 getattr(self, 'attend_passage_hidden_' + layer_no)(hf))
+        gb = f.tanh(attention_q_plus_p[backward_idx] + \
+                 getattr(self, 'attend_passage_hidden_' + layer_no)(hb))
 
         # alpha_{f,g}.shape = (seq_len, batch, 1)
         alpha_f = f.softmax(getattr(self, 'passage_alpha_transform_' + layer_no)(gf), dim=0)
@@ -233,9 +236,9 @@ class MatchLSTM(nn.Module):
         # Hq = (seq_len, batch, hdim)
         # weighted_Hq_f.shape = (batch, hdim)
         weighted_Hq_f = torch.squeeze(torch.bmm(alpha_f.permute(1, 2, 0),
-                                      torch.transpose(Hq, 0, 1)), dim=1)
+                                      transposed_Hq), dim=1)
         weighted_Hq_b = torch.squeeze(torch.bmm(alpha_b.permute(1, 2, 0),
-                                      torch.transpose(Hq, 0, 1)), dim=1)
+                                      transposed_Hq), dim=1)
 
         # z{f,b}.shape = (batch, 2 * hdim)
         zf = torch.cat((Hpi[forward_idx], weighted_Hq_f), dim=-1)
