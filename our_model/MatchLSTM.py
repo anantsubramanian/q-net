@@ -1,5 +1,6 @@
 import numpy as np
 import sys
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as f
@@ -19,6 +20,7 @@ class MatchLSTM(nn.Module):
 
     # Construct the model, storing all necessary layers.
     self.build_model(debug)
+    self.debug = debug
 
   # Load configuration options
   def load_from_config(self, config):
@@ -431,6 +433,9 @@ class MatchLSTM(nn.Module):
     question_lens = question[1]
     f1_mat = self.placeholder(f1_matrices)
 
+    if self.debug:
+      start_prepare = time.time()
+
     mask_p = self.get_mask_matrix(batch_size, max_passage_len, passage_lens)
     mask_q = self.get_mask_matrix(batch_size, max_question_len, question_lens)
 
@@ -447,6 +452,12 @@ class MatchLSTM(nn.Module):
     p = torch.cat((p, self.placeholder(passage_pos_tags)), dim=-1)
     q = torch.cat((q, self.placeholder(question_pos_tags)), dim=-1)
 
+    if self.debug:
+      p.sum()
+      q.sum()
+      print "Data preparation time: %.2fs" % (time.time() - start_prepare)
+      start_preprocess = time.time()
+
     # Preprocessing LSTM outputs for passage and question input.
     # H{p,q}.shape = (seq_len, batch, hdim)
     Hp = p
@@ -461,6 +472,12 @@ class MatchLSTM(nn.Module):
       Hq = self.preprocess_input(str(layer_no), Hq, max_question_len, question_lens,
                                  batch_size, mask_q)
 
+    if self.debug:
+      Hp.sum()
+      Hq.sum()
+      print "Data pre-processing time: %.2fs" % (time.time() - start_preprocess)
+      start_matching = time.time()
+
     # Bi-directional multi-layer MatchLSTM for question-aware passage representation.
     Hr = Hp
     for layer_no in range(self.num_matchlstm_layers):
@@ -469,6 +486,11 @@ class MatchLSTM(nn.Module):
       # Question-aware passage representation dropout.
       Hr = getattr(self, 'dropout_passage_matchlstm_' + str(layer_no))(Hr)
 
+    if self.debug:
+      Hr.sum()
+      print "Matching passage with question time: %.2fs" % (time.time() - start_matching)
+      start_answer = time.time()
+
     # Get probability distributions over the answer start, answer end,
     # and the loss for training.
     # At this point, Hr.shape = (seq_len, batch, hdim)
@@ -476,6 +498,10 @@ class MatchLSTM(nn.Module):
       self.point_at_answer(networks, Hr, Hp, Hq, max_question_len,
                            question_lens, max_passage_len, passage_lens,
                            batch_size, answer, f1_mat)
+
+    if self.debug:
+      loss.data[0]
+      print "Answer pointer time: %.2fs" % (time.time() - start_answer)
 
     self.loss = loss
     return answer_distributions_list
