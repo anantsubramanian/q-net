@@ -168,11 +168,7 @@ class MatchLSTM(nn.Module):
   # inp.shape = (seq_len, batch)
   # output.shape = (seq_len, batch, embed_size)
   def get_glove_embeddings(self, inp):
-    output = np.zeros((inp.shape[0], inp.shape[1], self.embed_size))
-    for i, batch in enumerate(inp):
-      for j, word_id in enumerate(batch):
-        output[i][j] = self.embedding[word_id]
-    return self.placeholder(output)
+    return self.placeholder(self.embedding[inp])
 
   # Get hidden states of a bi-directional pre-processing LSTM run over
   # the given input sequence.
