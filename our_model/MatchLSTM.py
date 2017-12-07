@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as f
 
 from torch.autograd import Variable
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 class MatchLSTM(nn.Module):
   ''' Match-LSTM model definition. Properties specified in config.'''
@@ -64,13 +65,11 @@ class MatchLSTM(nn.Module):
                                     self.word_to_index['<pad>'])
 
     # Passage and Question pre-processing LSTMs (matrices Hp and Hq respectively).
-    for layer_no in range(self.num_preprocessing_layers):
-      input_size = self.embed_size + self.num_pos_tags \
-                     if layer_no == 0 else self.hidden_size
-      setattr(self, 'dropoutp_' + str(layer_no), nn.Dropout(self.dropout))
-      setattr(self, 'dropoutq_' + str(layer_no), nn.Dropout(self.dropout))
-      setattr(self, 'preprocessing_lstm_' + str(layer_no),
-              nn.LSTMCell(input_size = input_size, hidden_size = self.hidden_size // 2))
+    self.preprocessing_lstm = nn.LSTM(input_size = self.embed_size + self.num_pos_tags,
+                                      hidden_size = self.hidden_size // 2,
+                                      num_layers = self.num_preprocessing_layers,
+                                      dropout = self.dropout,
+                                      bidirectional = True)
 
     # Attention transformations (variable names below given against those in
     # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
@@ -170,36 +169,20 @@ class MatchLSTM(nn.Module):
   def get_glove_embeddings(self, inp):
     return self.placeholder(self.embedding[inp])
 
-  # Get hidden states of a bi-directional pre-processing LSTM run over
-  # the given input sequence.
-  def preprocess_input(self, layer_no, inputs, max_len, input_lens,
-                       batch_size, mask):
-    Hf, Hb = [], []
-    hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
-    hb, cb = self.get_initial_lstm(batch_size, self.hidden_size // 2)
-    for t in range(max_len):
-      t_b = max_len - t - 1
-      _, cf = getattr(self, 'preprocessing_lstm_' + layer_no)(inputs[t], (hf, cf))
-      _, cb = getattr(self, 'preprocessing_lstm_' + layer_no)(inputs[t_b], (hb, cb))
-
-      # Mask out padded regions of input.
-      cf = cf * mask[t]
-      cb = cb * mask[t_b]
-
-      # Don't use LSTM output gating.
-      hf = f.tanh(cf)
-      hb = f.tanh(cb)
-
-      Hf.append(hf)
-      Hb.append(hb)
-
-    # H{f,b}.shape = (seq_len, batch, hdim / 2)
-    # H.shape = (seq_len, batch, hdim)
-    Hb = Hb[::-1]
-    Hf = torch.stack(Hf, dim=0)
-    Hb = torch.stack(Hb, dim=0)
-    H = torch.cat((Hf, Hb), dim=-1)
-    return H
+  # Get hidden states of a bi-directional multi-layer pre-processing LSTM run
+  # over the given input sequence.
+  def preprocess_input(self, inputs, max_len, input_lens, batch_size):
+    idxs = np.array(np.argsort(input_lens)[::-1])
+    lens = [ input_lens[idx] for idx in idxs ]
+    idxs = self.variable(torch.from_numpy(idxs))
+    inputs_sorted = torch.index_select(inputs, 1, idxs)
+    inputs_sorted = pack_padded_sequence(inputs_sorted, lens)
+    H, _ = self.preprocessing_lstm(inputs_sorted)
+    H, _ = pad_packed_sequence(H)
+    unsorted_idxs = self.variable(torch.zeros(idxs.size()[0])).long()
+    unsorted_idxs.scatter_(0, idxs,
+                           self.variable(torch.arange(idxs.size()[0])).long())
+    return torch.index_select(H, 1, unsorted_idxs)
 
   # Get a question-aware passage representation.
   def match_question_passage(self, layer_no, Hpi, Hq, max_passage_len,
@@ -459,17 +442,8 @@ class MatchLSTM(nn.Module):
 
     # Preprocessing LSTM outputs for passage and question input.
     # H{p,q}.shape = (seq_len, batch, hdim)
-    Hp = p
-    for layer_no in range(self.num_preprocessing_layers):
-      Hp = getattr(self, 'dropoutp_' + str(layer_no))(Hp)
-      Hp = self.preprocess_input(str(layer_no), Hp, max_passage_len, passage_lens,
-                                 batch_size, mask_p)
-
-    Hq = q
-    for layer_no in range(self.num_preprocessing_layers):
-      Hq = getattr(self, 'dropoutq_' + str(layer_no))(Hq)
-      Hq = self.preprocess_input(str(layer_no), Hq, max_question_len, question_lens,
-                                 batch_size, mask_q)
+    Hp = self.preprocess_input(p, max_passage_len, passage_lens, batch_size)
+    Hq = self.preprocess_input(q, max_question_len, question_lens, batch_size)
 
     if self.debug:
       Hp.sum()
