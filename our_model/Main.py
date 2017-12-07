@@ -101,8 +101,9 @@ def read_and_process_data(args):
     dev = dev[:320]
     test = test[:320]
 
+  network_ids = ["0"] if args.f1_loss_multiplier == 0 else ["0", "1"]
   train_order = [ (i,x) for i in range(0, len(train), batch_size) \
-                    for x in ["0", "1"] ]
+                    for x in network_ids ]
   dev_order = [ i for i in range(0, len(dev), test_batch_size) ]
   test_order = [ i for i in range(0, len(test), test_batch_size) ]
   print "Done."
