@@ -45,6 +45,7 @@ def init_parser():
   parser.add_argument('--cuda', action='store_true')
   parser.add_argument('--max_answer_span', type=int, default=15)
   parser.add_argument('--num_preprocessing_layers', type=int, default=2)
+  parser.add_argument('--num_postprocessing_layers', type=int, default=2)
   parser.add_argument('--num_matchlstm_layers', type=int, default=2)
   parser.add_argument('--f1_loss_multiplier', type=float, default=2.0)
   parser.add_argument('--model_description')
@@ -132,6 +133,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
              'num_pos_tags': num_pos_tags,
              'f1_loss_multiplier': args.f1_loss_multiplier,
              'num_preprocessing_layers': args.num_preprocessing_layers,
+             'num_postprocessing_layers': args.num_postprocessing_layers,
              'num_matchlstm_layers': args.num_matchlstm_layers }
   print "Building model."
   model = MatchLSTM(config, args.debug)

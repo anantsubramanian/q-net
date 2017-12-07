@@ -40,6 +40,7 @@ class MatchLSTM(nn.Module):
     self.f1_loss_multiplier = config['f1_loss_multiplier']
     self.num_pos_tags = config['num_pos_tags']
     self.num_preprocessing_layers = config['num_preprocessing_layers']
+    self.num_postprocessing_layers = config['num_postprocessing_layers']
     self.num_matchlstm_layers = config['num_matchlstm_layers']
 
   def build_model(self, debug):
@@ -90,6 +91,13 @@ class MatchLSTM(nn.Module):
                           hidden_size = self.hidden_size // 2))
       setattr(self, 'dropout_passage_matchlstm_' + str(layer_no),
               nn.Dropout(self.dropout))
+
+    # Question-aware passage post-processing LSTM.
+    self.postprocessing_lstm = nn.LSTM(input_size = self.hidden_size,
+                                       hidden_size = self.hidden_size // 2,
+                                       num_layers = self.num_postprocessing_layers,
+                                       dropout = self.dropout,
+                                       bidirectional = True)
 
     # 2 answer pointer networks. First one identifies the answer sentence, while
     # the second one identifies the correct answer span.
@@ -169,15 +177,16 @@ class MatchLSTM(nn.Module):
   def get_glove_embeddings(self, inp):
     return self.placeholder(self.embedding[inp])
 
-  # Get hidden states of a bi-directional multi-layer pre-processing LSTM run
-  # over the given input sequence.
-  def preprocess_input(self, inputs, max_len, input_lens, batch_size):
+  # Get final layer hidden states of the provided LSTM run over the given
+  # input sequence.
+  def process_input_with_lstm(self, inputs, max_len, input_lens, batch_size,
+                              lstm_to_use):
     idxs = np.array(np.argsort(input_lens)[::-1])
     lens = [ input_lens[idx] for idx in idxs ]
     idxs = self.variable(torch.from_numpy(idxs))
     inputs_sorted = torch.index_select(inputs, 1, idxs)
     inputs_sorted = pack_padded_sequence(inputs_sorted, lens)
-    H, _ = self.preprocessing_lstm(inputs_sorted)
+    H, _ = lstm_to_use(inputs_sorted)
     H, _ = pad_packed_sequence(H)
     unsorted_idxs = self.variable(torch.zeros(idxs.size()[0])).long()
     unsorted_idxs.scatter_(0, idxs,
@@ -442,8 +451,10 @@ class MatchLSTM(nn.Module):
 
     # Preprocessing LSTM outputs for passage and question input.
     # H{p,q}.shape = (seq_len, batch, hdim)
-    Hp = self.preprocess_input(p, max_passage_len, passage_lens, batch_size)
-    Hq = self.preprocess_input(q, max_question_len, question_lens, batch_size)
+    Hp = self.process_input_with_lstm(p, max_passage_len, passage_lens, batch_size,
+                                      self.preprocessing_lstm)
+    Hq = self.process_input_with_lstm(q, max_question_len, question_lens, batch_size,
+                                      self.preprocessing_lstm)
 
     if self.debug:
       Hp.sum()
@@ -461,7 +472,17 @@ class MatchLSTM(nn.Module):
 
     if self.debug:
       Hr.sum()
-      print "Matching passage with question time: %.2fs" % (time.time() - start_matching)
+      print "Matching passage with question time: %.2fs" % \
+            (time.time() - start_matching)
+      start_postprocess = time.time()
+
+    Hr = self.process_input_with_lstm(Hr, max_passage_len, passage_lens, batch_size,
+                                      self.postprocessing_lstm)
+
+    if self.debug:
+      Hr.sum()
+      print "Post-processing question-aware passage time: %.2fs" % \
+            (time.time() - start_postprocess)
       start_answer = time.time()
 
     # Get probability distributions over the answer start, answer end,
