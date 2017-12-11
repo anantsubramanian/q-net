@@ -384,12 +384,10 @@ class OurModel(nn.Module):
       one_idx = networks.index("1")
       # Compute the F1 distribution loss.
       # f1_matrices.shape = (batch, max_seq_len, max_seq_len)
-      # If there is thresholding, only penalize values below that threshold
+      # If there is thresholding, only penalize values below that threshold.
       if self.f1_loss_threshold >= 0:
-        f1_matrices_thresholded = np.zeros_like(f1_matrices)
-        for idx in range(batch_size):
-          f1_matrices_thresholded[idx][f1_matrices[idx] >= self.f1_loss_threshold] = 1.0
-        f1_matrices = self.placeholder(f1_matrices_thresholded)
+        f1_matrices = self.placeholder(f1_matrices > self.f1_loss_threshold,
+                                       to_float = True)
       else:
         f1_matrices = self.placeholder(f1_matrices)
       loss_f1_f = -torch.log(
