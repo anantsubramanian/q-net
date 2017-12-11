@@ -38,6 +38,7 @@ class OurModel(nn.Module):
     self.use_cuda = config['cuda']
     self.dropout = config['dropout']
     self.f1_loss_multiplier = config['f1_loss_multiplier']
+    self.f1_loss_threshold = config['f1_loss_threshold']
     self.num_pos_tags = config['num_pos_tags']
     self.num_preprocessing_layers = config['num_preprocessing_layers']
     self.num_postprocessing_layers = config['num_postprocessing_layers']
@@ -378,9 +379,18 @@ class OurModel(nn.Module):
           -torch.log(distributions[zero_idx][1][0][idx, answer[1][idx]]),
           -torch.log(distributions[zero_idx][1][1][idx, answer[0][idx]])])
       loss += sum(mle_losses) / 2.0
-    elif "1" in networks:
+    if "1" in networks:
       one_idx = networks.index("1")
       # Compute the F1 distribution loss.
+      # f1_matrices.shape = (batch, max_seq_len, max_seq_len)
+      # If there is thresholding, only penalize values below that threshold
+      if self.f1_loss_threshold >= 0:
+        f1_matrices_thresholded = np.zeros_like(f1_matrices)
+        for idx in range(batch_size):
+          f1_matrices_thresholded[idx][f1_matrices[idx] >= self.f1_loss_threshold] = 1.0
+        f1_matrices = self.placeholder(f1_matrices_thresholded)
+      else:
+        f1_matrices = self.placeholder(f1_matrices)
       loss_f1_f = -torch.log(
                       (torch.bmm(torch.unsqueeze(distributions[one_idx][0][0], -1),
                                  torch.unsqueeze(distributions[one_idx][0][1], 1)) * \
@@ -422,7 +432,6 @@ class OurModel(nn.Module):
     max_question_len = question[0].shape[0]
     passage_lens = passage[1]
     question_lens = question[1]
-    f1_mat = self.placeholder(f1_matrices)
 
     if self.debug:
       start_prepare = time.time()
@@ -491,7 +500,7 @@ class OurModel(nn.Module):
     answer_distributions_list, loss = \
       self.point_at_answer(networks, Hr, Hp, Hq, max_question_len,
                            question_lens, max_passage_len, passage_lens,
-                           batch_size, answer, f1_mat)
+                           batch_size, answer, f1_matrices)
 
     if self.debug:
       loss.data[0]

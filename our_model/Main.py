@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import argparse
 import cPickle as pickle
 import json
@@ -93,8 +95,10 @@ def init_parser():
   parser.add_argument('--f1_loss_multiplier', type=float, default=2.0,
                       help = "Multiply the Expected F1 loss by this value. Useful as this loss has a \
                               smaller magnitude than the MLE loss.")
-  parser.add_argument('--f1_loss_threshold', type=float, default=0.0,
-                      help = "Only penalize F1 values below this threshold.")
+  parser.add_argument('--f1_loss_threshold', type=float, default=-1.0,
+                      help = "Only penalize F1 values below this threshold. -1 is the distribution loss.")
+  parser.add_argument('--combine_losses', action='store_true',
+                      help = "Combine both losses, instead of training in a multi-task setting.")
   parser.add_argument('--model_description',
                       help = "A useful model description to keep track of which model was run.")
   return parser
@@ -150,8 +154,11 @@ def read_and_process_data(args):
     test = test[:320]
 
   network_ids = ["0"] if args.f1_loss_multiplier == 0 else ["0", "1"]
-  train_order = [ (i,x) for i in range(0, len(train), batch_size) \
-                    for x in network_ids ]
+  if args.combine_losses:
+    train_order = [ (i, ["0", "1"]) for i in range(0, len(train), batch_size) ]
+  else:
+    train_order = [ (i,[x]) for i in range(0, len(train), batch_size) \
+                      for x in network_ids ]
   dev_order = [ i for i in range(0, len(dev), test_batch_size) ]
   test_order = [ i for i in range(0, len(test), test_batch_size) ]
   print "Done."
@@ -181,6 +188,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
              'cuda': args.cuda,
              'num_pos_tags': num_pos_tags,
              'f1_loss_multiplier': args.f1_loss_multiplier,
+             'f1_loss_threshold' : args.f1_loss_threshold,
              'num_preprocessing_layers': args.num_preprocessing_layers,
              'num_postprocessing_layers': args.num_postprocessing_layers,
              'num_matchlstm_layers': args.num_matchlstm_layers }
@@ -355,7 +363,7 @@ def train_model(args):
     start_t = time.time()
     train_loss_sum = 0.0
     model.train()
-    for i, (num, network_id) in enumerate(train_order):
+    for i, (num, network_ids) in enumerate(train_order):
       print "\rTrain epoch %d, %.2f s - (Done %d of %d)" %\
             (EPOCH, (time.time()-start_t)*(len(train_order)-i-1)/(i+1), i+1,
              len(train_order)),
@@ -369,7 +377,7 @@ def train_model(args):
       # Predict on the network_id assigned to this minibatch.
       model(*get_batch(train_batch, train_ques_to_para, train_tokenized_paras,
                        train_data.paras_tags, num_pos_tags),
-            networks = [network_id])
+            networks = network_ids)
       model.loss.backward()
       optimizer.step()
       train_loss_sum += model.loss.data[0]
@@ -525,7 +533,7 @@ if __name__ == "__main__":
   args = init_parser().parse_args()
   assert args.model_description is not None, "Model description must be provided."
   print "-" * 10 + "Arguments:" + "-" * 10
-  for arg in vars(args):
+  for arg in sorted(vars(args)):
     print "--" + arg, getattr(args, arg),
   print "\n" + "-" * 30
   if args.run_type == "train":
