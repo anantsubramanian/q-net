@@ -17,38 +17,86 @@ from OurModel import OurModel
 
 def init_parser():
   parser = argparse.ArgumentParser()
-  parser.add_argument('--run_type', default='train')
-  parser.add_argument('--train_json')
-  parser.add_argument('--dev_json')
-  parser.add_argument('--train_pickle')
-  parser.add_argument('--dev_pickle')
-  parser.add_argument('--predictions_output_json')
-  parser.add_argument('--dump_pickles', action='store_true')
-  parser.add_argument('--max_train_articles', type=int, default=-1)
-  parser.add_argument('--max_dev_articles', type=int, default=-1)
-  parser.add_argument('--embed_size', type=int, default=300)
-  parser.add_argument('--hidden_size', type=int, default=300)
-  parser.add_argument('--attention_size', type=int, default=150)
-  parser.add_argument('--learning_rate', type=float, default=0.01)
-  parser.add_argument('--decay_rate', type=float, default=0.90)
-  parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt')
-  parser.add_argument('--disable_glove', action='store_true')
-  parser.add_argument('--ckpt', type=int, default=0)
-  parser.add_argument('--model_file')
-  parser.add_argument('--epochs', type=int, default=50)
-  parser.add_argument('--model_dir', default='./')
-  parser.add_argument('--batch_size', type=int, default=64)
-  parser.add_argument('--test_batch_size', type=int, default=32)
-  parser.add_argument('--optimizer', default='Adamax') # 'SGD' or 'Adamax'
-  parser.add_argument('--debug', action='store_true')
-  parser.add_argument('--dropout', type=float, default=0.4)
-  parser.add_argument('--cuda', action='store_true')
-  parser.add_argument('--max_answer_span', type=int, default=15)
-  parser.add_argument('--num_preprocessing_layers', type=int, default=2)
-  parser.add_argument('--num_postprocessing_layers', type=int, default=2)
-  parser.add_argument('--num_matchlstm_layers', type=int, default=2)
-  parser.add_argument('--f1_loss_multiplier', type=float, default=2.0)
-  parser.add_argument('--model_description')
+  parser.add_argument('--run_type', default='train',
+                      help = "One of either test or train.")
+  parser.add_argument('--train_json',
+                      help = "Path to the input train json file containing SQuAD train data.")
+  parser.add_argument('--dev_json',
+                      help = "Path to the input dev json file containing SQuAD dev data.")
+  parser.add_argument('--train_pickle',
+                      help = "Path to read/dump train pickle file to.")
+  parser.add_argument('--dev_pickle',
+                      help = "Path to read/dump dev pickle file to.")
+  parser.add_argument('--predictions_output_json',
+                      help = "When using run_type test, output predictions will be written to this \
+                              json")
+  parser.add_argument('--dump_pickles', action='store_true',
+                      help = "Whether the train/dev pickles must be dumped. Input jsons must be \
+                              provided to create these pickles.")
+  parser.add_argument('--max_train_articles', type=int, default=-1,
+                      help = "Maximum number of training articles to use, while reading from the \
+                              train json file.")
+  parser.add_argument('--max_dev_articles', type=int, default=-1,
+                      help = "Maximum number of dev articles to use, while reading from the dev \
+                              json file.")
+  parser.add_argument('--embed_size', type=int, default=300,
+                      help = "Embedding size to use for inputs. This *MUST* match the GloVe dimensions \
+                              when disable_glove is not set.")
+  parser.add_argument('--hidden_size', type=int, default=300,
+                      help = "Hidden dimension sizes to use throughout the network. For bi-directional \
+                              layers, each direction is half this size.")
+  parser.add_argument('--attention_size', type=int, default=150,
+                      help = "Number of dimensions of the intermediate spaces to which vectors are cast \
+                              before they are used to compute attention values.")
+  parser.add_argument('--learning_rate', type=float, default=0.01,
+                      help = "Learning rate used by the optimizer.")
+  parser.add_argument('--decay_rate', type=float, default=0.90,
+                      help = "The learning rate is multiplied by this value after every epoch.")
+  parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt',
+                      help = "Path to the GloVe vectors to use for the embedding layer.")
+  parser.add_argument('--disable_glove', action='store_true',
+                      help = "When provided, GloVe vectors are not used, and an embedding layer is \
+                              learned in an end-to-end manner.")
+  parser.add_argument('--ckpt', type=int, default=0,
+                      help = "Checkpoint number to resume from. If 0, starts training from scratch.")
+  parser.add_argument('--model_file',
+                      help = "A particular model file to load the model from. Especially useful for \
+                              test runs.")
+  parser.add_argument('--epochs', type=int, default=50,
+                      help = "Number of epochs to train the model for.")
+  parser.add_argument('--model_dir', default='./',
+                      help = "Directory to dump the trained models after every epoch, as well as the \
+                              dev predictions json files after every epoch.")
+  parser.add_argument('--batch_size', type=int, default=64,
+                      help = "Batch size to use during training.")
+  parser.add_argument('--test_batch_size', type=int, default=32,
+                      help = "Batch size to use during development and test data passes.")
+  parser.add_argument('--optimizer', default='Adamax',
+                      help = "Optimizer to use. One of either 'SGD', 'Adamax' or 'Adadelta'.")
+  parser.add_argument('--debug', action='store_true',
+                      help = "If true, GloVe vectors are not read, and train and dev data sizes are \
+                              reduced to 3200 each. Useful for debugging passes of every part of the \
+                              code.")
+  parser.add_argument('--dropout', type=float, default=0.4,
+                      help = "Dropout drop probability between layers and modules of the network.")
+  parser.add_argument('--cuda', action='store_true',
+                      help = "Whether the model must be trained of an NVIDIA GPU device.")
+  parser.add_argument('--max_answer_span', type=int, default=15,
+                      help = "Maximum length of answers during prediction. Search is performed over spans \
+                              of this length.")
+  parser.add_argument('--num_preprocessing_layers', type=int, default=2,
+                      help = "Number of passage and question pre-processing layers.")
+  parser.add_argument('--num_postprocessing_layers', type=int, default=2,
+                      help = "Number of post-processing layers, before the answer pointer network.")
+  parser.add_argument('--num_matchlstm_layers', type=int, default=1,
+                      help = "Number of MatchLSTM layers to use.")
+  parser.add_argument('--f1_loss_multiplier', type=float, default=2.0,
+                      help = "Multiply the Expected F1 loss by this value. Useful as this loss has a \
+                              smaller magnitude than the MLE loss.")
+  parser.add_argument('--f1_loss_threshold', type=float, default=0.0,
+                      help = "Only penalize F1 values below this threshold.")
+  parser.add_argument('--model_description',
+                      help = "A useful model description to keep track of which model was run.")
   return parser
 
 
