@@ -94,11 +94,12 @@ class OurModel(nn.Module):
               nn.Dropout(self.dropout))
 
     # Question-aware passage post-processing LSTM.
-    self.postprocessing_lstm = nn.LSTM(input_size = self.hidden_size,
-                                       hidden_size = self.hidden_size // 2,
-                                       num_layers = self.num_postprocessing_layers,
-                                       dropout = self.dropout,
-                                       bidirectional = True)
+    if self.num_postprocessing_layers > 0:
+      self.postprocessing_lstm = nn.LSTM(input_size = self.hidden_size,
+                                         hidden_size = self.hidden_size // 2,
+                                         num_layers = self.num_postprocessing_layers,
+                                         dropout = self.dropout,
+                                         bidirectional = True)
 
     # 2 answer pointer networks. First one identifies the answer sentence, while
     # the second one identifies the correct answer span.
@@ -485,8 +486,9 @@ class OurModel(nn.Module):
             (time.time() - start_matching)
       start_postprocess = time.time()
 
-    Hr = self.process_input_with_lstm(Hr, max_passage_len, passage_lens, batch_size,
-                                      self.postprocessing_lstm)
+    if self.num_postprocessing_layers > 0:
+      Hr = self.process_input_with_lstm(Hr, max_passage_len, passage_lens, batch_size,
+                                        self.postprocessing_lstm)
 
     if self.debug:
       Hr.sum()
