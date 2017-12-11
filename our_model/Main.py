@@ -13,7 +13,7 @@ from operator import itemgetter
 from torch.autograd import Variable
 from torch.optim import SGD, Adamax
 from Input import Dictionary, Data, pad, read_data, create2d, one_hot
-from MatchLSTM import MatchLSTM
+from OurModel import OurModel
 
 def init_parser():
   parser = argparse.ArgumentParser()
@@ -137,7 +137,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
              'num_postprocessing_layers': args.num_postprocessing_layers,
              'num_matchlstm_layers': args.num_matchlstm_layers }
   print "Building model."
-  model = MatchLSTM(config, args.debug)
+  model = OurModel(config, args.debug)
   print "Done!"
   sys.stdout.flush()
 

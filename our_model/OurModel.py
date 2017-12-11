@@ -8,13 +8,13 @@ import torch.nn.functional as f
 from torch.autograd import Variable
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-class MatchLSTM(nn.Module):
+class OurModel(nn.Module):
   ''' Match-LSTM model definition. Properties specified in config.'''
 
   # Constructor
   def __init__(self, config, debug = False):
     # Call constructor of nn module.
-    super(MatchLSTM, self).__init__()
+    super(OurModel, self).__init__()
 
     # Set-up parameters from config.
     self.load_from_config(config)
