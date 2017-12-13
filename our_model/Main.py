@@ -52,7 +52,7 @@ def init_parser():
                               before they are used to compute attention values.")
   parser.add_argument('--learning_rate', type=float, default=0.01,
                       help = "Learning rate used by the optimizer.")
-  parser.add_argument('--decay_rate', type=float, default=0.90,
+  parser.add_argument('--decay_rate', type=float, default=0.80,
                       help = "The learning rate is multiplied by this value after every epoch.")
   parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt',
                       help = "Path to the GloVe vectors to use for the embedding layer.")
@@ -92,7 +92,7 @@ def init_parser():
                       help = "Number of post-processing layers, before the answer pointer network.")
   parser.add_argument('--num_matchlstm_layers', type=int, default=1,
                       help = "Number of MatchLSTM layers to use.")
-  parser.add_argument('--f1_loss_multiplier', type=float, default=2.0,
+  parser.add_argument('--f1_loss_multiplier', type=float, default=1.0,
                       help = "Multiply the Expected F1 loss by this value. Useful as this loss has a \
                               smaller magnitude than the MLE loss.")
   parser.add_argument('--f1_loss_threshold', type=float, default=-1.0,

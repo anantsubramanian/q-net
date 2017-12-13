@@ -1,4 +1,3 @@
-import corenlp
 import cPickle as pickle
 import gzip
 import json
