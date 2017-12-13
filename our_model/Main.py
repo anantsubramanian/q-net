@@ -172,7 +172,7 @@ def read_and_process_data(args):
 
 #------------------------------ Create model ----------------------------------#
 def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags,
-                num_ner_tags):
+                num_ner_tags, pos_tags, ner_tags):
   config = { 'embed_size' : args.embed_size,
              'vocab_size' : vocab_size,
              'hidden_size' : args.hidden_size,
@@ -205,6 +205,8 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags,
 
   if not args.disable_glove:
     print "Embedding dim:", model.embedding.shape
+  print "POS tags (%d total):" % (num_pos_tags), pos_tags
+  print "NER tags (%d total):" % (num_ner_tags), ner_tags
 
   if args.cuda:
     model = model.cuda()
@@ -349,7 +351,9 @@ def train_model(args):
   model, config = build_model(args, train_data.dictionary.size(),
                               train_data.dictionary.index_to_word,
                               train_data.dictionary.word_to_index,
-                              num_pos_tags, num_ner_tags)
+                              num_pos_tags, num_ner_tags,
+                              train_data.dictionary.pos_tags,
+                              train_data.dictionary.ner_tags)
 
   if not os.path.exists(args.model_dir):
     os.mkdir(args.model_dir)
@@ -391,8 +395,9 @@ def train_model(args):
     train_loss_sum = 0.0
     model.train()
     for i, (num, network_ids) in enumerate(train_order):
-      print "\rTrain epoch %d, %.2f s - (Done %d of %d)" %\
-            (EPOCH, (time.time()-start_t)*(len(train_order)-i-1)/(i+1), i+1,
+      print "\r[%.2f%%] Train epoch %d, %.2f s - (Done %d of %d)" %\
+            ((100.0 * (i+1))/len(train_order), EPOCH,
+             (time.time()-start_t)*(len(train_order)-i-1)/(i+1), i+1,
              len(train_order)),
 
       # Create next batch by getting lengths and padding
@@ -489,7 +494,9 @@ def test_model(args):
   model, config = build_model(args, train_data.dictionary.size(),
                               train_data.dictionary.index_to_word,
                               train_data.dictionary.word_to_index,
-                              num_pos_tags, num_ner_tags)
+                              num_pos_tags, num_ner_tags,
+                              train_data.dictionary.pos_tags,
+                              train_data.dictionary.ner_tags)
   print(model)
 
   #------------------------- Reload and test model ----------------------------#

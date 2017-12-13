@@ -368,20 +368,18 @@ class OurModel(nn.Module):
                             question_lens, max_passage_len, passage_lens,
                             batch_size))
 
-    loss = 0.0
+    batch_losses = [ [] for _ in range(batch_size) ]
     if "0" in networks:
       zero_idx = networks.index("0")
       # For each example in the batch, add the negative log of answer start
       # and end index probabilities to the MLE loss, from both forward and
       # backward answer pointers.
-      mle_losses = []
       for idx in range(batch_size):
-        mle_losses.extend([
-          -torch.log(distributions[zero_idx][0][0][idx, answer[0][idx]]),
-          -torch.log(distributions[zero_idx][0][1][idx, answer[1][idx]]),
-          -torch.log(distributions[zero_idx][1][0][idx, answer[1][idx]]),
-          -torch.log(distributions[zero_idx][1][1][idx, answer[0][idx]])])
-      loss += sum(mle_losses) / 2.0
+        batch_losses[idx].append(
+          distributions[zero_idx][0][0][idx, answer[0][idx]] *\
+          distributions[zero_idx][0][1][idx, answer[1][idx]] *\
+          distributions[zero_idx][1][0][idx, answer[1][idx]] *\
+          distributions[zero_idx][1][1][idx, answer[0][idx]])
     if "1" in networks:
       one_idx = networks.index("1")
       # Compute the F1 distribution loss.
@@ -392,17 +390,20 @@ class OurModel(nn.Module):
                                        to_float = True)
       else:
         f1_matrices = self.placeholder(f1_matrices)
-      loss_f1_f = -torch.log(
-                      (torch.bmm(torch.unsqueeze(distributions[one_idx][0][0], -1),
-                                 torch.unsqueeze(distributions[one_idx][0][1], 1)) * \
-                       f1_matrices).view(batch_size, -1).sum(1)).sum()
-      loss_f1_b = -torch.log(
-                      (torch.bmm(torch.unsqueeze(distributions[one_idx][1][1], -1),
-                                 torch.unsqueeze(distributions[one_idx][1][0], 1)) * \
-                       f1_matrices).view(batch_size, -1).sum(1)).sum()
-      loss += self.f1_loss_multiplier * (loss_f1_f + loss_f1_b) / 2.0
+      loss_f1_f = (torch.bmm(torch.unsqueeze(distributions[one_idx][0][0], -1),
+                             torch.unsqueeze(distributions[one_idx][0][1], 1)) * \
+                   f1_matrices).view(batch_size, -1).sum(1)
+      loss_f1_b = (torch.bmm(torch.unsqueeze(distributions[one_idx][1][1], -1),
+                             torch.unsqueeze(distributions[one_idx][1][0], 1)) * \
+                   f1_matrices).view(batch_size, -1).sum(1)
+      for idx in range(batch_size):
+        batch_losses[idx].append(self.f1_loss_multiplier * loss_f1_f[idx] *\
+                                 loss_f1_b[idx])
 
-    loss /= (batch_size * len(networks))
+    loss = 0.0
+    for idx in range(batch_size):
+      loss += -torch.log(sum(batch_losses[idx]) / (1 + self.f1_loss_multiplier))
+    loss /= batch_size
     return distributions, loss
 
   # Get matrix for padding hidden states of an LSTM running over the
