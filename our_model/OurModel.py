@@ -40,6 +40,7 @@ class OurModel(nn.Module):
     self.f1_loss_multiplier = config['f1_loss_multiplier']
     self.f1_loss_threshold = config['f1_loss_threshold']
     self.num_pos_tags = config['num_pos_tags']
+    self.num_ner_tags = config['num_ner_tags']
     self.num_preprocessing_layers = config['num_preprocessing_layers']
     self.num_postprocessing_layers = config['num_postprocessing_layers']
     self.num_matchlstm_layers = config['num_matchlstm_layers']
@@ -67,11 +68,12 @@ class OurModel(nn.Module):
                                     self.word_to_index['<pad>'])
 
     # Passage and Question pre-processing LSTMs (matrices Hp and Hq respectively).
-    self.preprocessing_lstm = nn.LSTM(input_size = self.embed_size + self.num_pos_tags,
-                                      hidden_size = self.hidden_size // 2,
-                                      num_layers = self.num_preprocessing_layers,
-                                      dropout = self.dropout,
-                                      bidirectional = True)
+    self.preprocessing_lstm = \
+      nn.LSTM(input_size = self.embed_size + self.num_pos_tags + self.num_ner_tags,
+              hidden_size = self.hidden_size // 2,
+              num_layers = self.num_preprocessing_layers,
+              dropout = self.dropout,
+              bidirectional = True)
 
     # Attention transformations (variable names below given against those in
     # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
@@ -420,9 +422,15 @@ class OurModel(nn.Module):
   # answer = tuple((2, batch))
   # f1_matrices = (batch, seq_len, seq_len)
   # question_pos_tags = (seq_len, batch, num_pos_tags)
+  # question_ner_tags = (seq_len, batch, num_ner_tags)
   # passage_pos_tags = (seq_len, batch, num_pos_tags)
-  def forward(self, passage, question, answer, f1_matrices, question_pos_tags,
-              passage_pos_tags, answer_sentence, networks):
+  # passage_ner_tags = (seq_len, batch, num_ner_tags)
+  # answer_sentence = ((2, batch))
+  # networks = list with either ["0"], ["1"] or ["0", "1"]
+  #            "0" corresponds to MLE network, and "1" to F1 network.
+  def forward(self, passage, question, answer, f1_matrices,
+              question_pos_tags, question_ner_tags, passage_pos_tags,
+              passage_ner_tags, answer_sentence, networks):
     if not self.use_glove:
       padded_passage = self.placeholder(passage[0], False)
       padded_question = self.placeholder(question[0], False)
@@ -447,9 +455,11 @@ class OurModel(nn.Module):
       q = self.get_glove_embeddings(question[0])
 
     # Embedding input dropout.
-    # {p,q}.shape = (seq_len, batch, embedding_dim + num_pos_tags)
-    p = torch.cat((p, self.placeholder(passage_pos_tags)), dim=-1)
-    q = torch.cat((q, self.placeholder(question_pos_tags)), dim=-1)
+    # {p,q}.shape = (seq_len, batch, embedding_dim + num_pos_tags + num_ner_tags)
+    p = torch.cat((p, self.placeholder(passage_pos_tags),
+                   self.placeholder(passage_ner_tags)), dim=-1)
+    q = torch.cat((q, self.placeholder(question_pos_tags),
+                   self.placeholder(question_ner_tags)), dim=-1)
 
     if self.debug:
       p.sum()

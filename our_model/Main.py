@@ -171,7 +171,8 @@ def read_and_process_data(args):
 
 
 #------------------------------ Create model ----------------------------------#
-def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
+def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags,
+                num_ner_tags):
   config = { 'embed_size' : args.embed_size,
              'vocab_size' : vocab_size,
              'hidden_size' : args.hidden_size,
@@ -187,6 +188,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
              'word_to_index': word_to_index,
              'cuda': args.cuda,
              'num_pos_tags': num_pos_tags,
+             'num_ner_tags': num_ner_tags,
              'f1_loss_multiplier': args.f1_loss_multiplier,
              'f1_loss_threshold' : args.f1_loss_threshold,
              'num_preprocessing_layers': args.num_preprocessing_layers,
@@ -211,20 +213,27 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags):
 #------------------------------------------------------------------------------#
 
 #--------------------------- Create an input minibatch ------------------------#
-def get_batch(batch, ques_to_para, tokenized_paras, paras_tags, num_tags):
+def get_batch(batch, ques_to_para, tokenized_paras, paras_pos_tags, paras_ner_tags,
+              question_pos_tags, question_ner_tags, num_pos_tags, num_ner_tags):
   # Variable length question, answer and paragraph sequences for batch.
   ques_lens_in = [ len(example[0]) for example in batch ]
   paras_in = [ tokenized_paras[ques_to_para[example[2]]] \
                  for example in batch ]
-  paras_tags_in = [ paras_tags[ques_to_para[example[2]]] \
-                      for example in batch ]
+  paras_pos_tags_in = [ paras_pos_tags[ques_to_para[example[2]]] \
+                          for example in batch ]
+  paras_ner_tags_in = [ paras_ner_tags[ques_to_para[example[2]]] \
+                          for example in batch ]
+  ques_pos_tags_in = [ question_pos_tags[example[2]] \
+                          for example in batch ]
+  ques_ner_tags_in = [ question_ner_tags[example[2]] \
+                          for example in batch ]
   paras_lens_in = [ len(para) for para in paras_in ]
   max_ques_len = max(ques_lens_in)
   max_para_len = max(paras_lens_in)
 
   # ans_in.shape = (2, batch)
   ans_in = np.array([ example[1] for example in batch ]).T
-  sent_in = np.array([ example[5] for example in batch ]).T
+  sent_in = np.array([ example[4] for example in batch ]).T
 
   # f1_mat_in.shape = (batch, seq_len, seq_len)
   f1_mat_in = np.array([ create2d(example[3], 0, max_para_len, example[1][0]) \
@@ -234,23 +243,40 @@ def get_batch(batch, ques_to_para, tokenized_paras, paras_tags, num_tags):
                          for example in batch ]).T
   paras_in = np.array([ pad(para, 0, max_para_len) for para in paras_in ]).T
 
-  # Fixed-length (padded) pos-tag inputs.
-  question_tags = np.array([ pad([ one_hot(tag, num_tags) for tag in example[4] ],
-                                 one_hot(-1, num_tags), max_ques_len) \
-                               for example in batch ])
-  question_tags = np.transpose(question_tags, (1, 0, 2))
-  passage_tags = np.array([ pad([ one_hot(tag, num_tags) for tag in para_tags ],
-                                 one_hot(-1, num_tags), max_para_len) \
-                               for para_tags in paras_tags_in ])
-  passage_tags = np.transpose(passage_tags, (1, 0, 2))
+  # Fixed-length (padded) pos-tag and ner-tag inputs.
+  question_pos_tags = \
+    np.array([ pad([ one_hot(postag, num_pos_tags) for postag in ques_pos_tags ],
+                   one_hot(-1, num_pos_tags),
+                   max_ques_len) \
+                 for ques_pos_tags in ques_pos_tags_in ])
+  question_ner_tags = \
+    np.array([ pad([ one_hot(nertag, num_ner_tags) for nertag in ques_ner_tags ],
+                   one_hot(-1, num_ner_tags),
+                   max_ques_len) \
+                 for ques_ner_tags in ques_ner_tags_in ])
+  paragraph_pos_tags = \
+    np.array([ pad([ one_hot(postag, num_pos_tags) for postag in paras_pos_tags ],
+                   one_hot(-1, num_pos_tags),
+                   max_para_len) \
+                 for paras_pos_tags in paras_pos_tags_in ])
+  paragraph_ner_tags = \
+    np.array([ pad([ one_hot(nertag, num_ner_tags) for nertag in paras_ner_tags ],
+                   one_hot(-1, num_ner_tags),
+                   max_para_len) \
+                 for paras_ner_tags in paras_ner_tags_in ])
+  question_pos_tags = np.transpose(question_pos_tags, (1, 0, 2))
+  question_ner_tags = np.transpose(question_ner_tags, (1, 0, 2))
+  paragraph_pos_tags = np.transpose(paragraph_pos_tags, (1, 0, 2))
+  paragraph_ner_tags = np.transpose(paragraph_ner_tags, (1, 0, 2))
 
   passage_input = (paras_in, paras_lens_in)
   question_input = (ques_in, ques_lens_in)
   answer_input = ans_in
   answer_sentence_input = sent_in
 
-  return passage_input, question_input, answer_input, f1_mat_in, question_tags,\
-         passage_tags, answer_sentence_input
+  return passage_input, question_input, answer_input, f1_mat_in, question_pos_tags,\
+         question_ner_tags, paragraph_pos_tags, paragraph_ner_tags,\
+         answer_sentence_input
 #------------------------------------------------------------------------------#
 
 
@@ -319,10 +345,11 @@ def train_model(args):
 
   # Build model
   num_pos_tags = len(train_data.dictionary.pos_tags)
+  num_ner_tags = len(train_data.dictionary.ner_tags)
   model, config = build_model(args, train_data.dictionary.size(),
                               train_data.dictionary.index_to_word,
                               train_data.dictionary.word_to_index,
-                              num_pos_tags)
+                              num_pos_tags, num_ner_tags)
 
   if not os.path.exists(args.model_dir):
     os.mkdir(args.model_dir)
@@ -376,7 +403,9 @@ def train_model(args):
 
       # Predict on the network_id assigned to this minibatch.
       model(*get_batch(train_batch, train_ques_to_para, train_tokenized_paras,
-                       train_data.paras_tags, num_pos_tags),
+                       train_data.paras_pos_tags, train_data.paras_ner_tags,
+                       train_data.question_pos_tags, train_data.question_ner_tags,
+                       num_pos_tags, num_ner_tags),
             networks = network_ids)
       model.loss.backward()
       optimizer.step()
@@ -419,7 +448,9 @@ def train_model(args):
       # Predict using both networks.
       distributions = \
         model(*get_batch(dev_batch, dev_ques_to_para, dev_tokenized_paras,
-                         dev_data.paras_tags, num_pos_tags),
+                         dev_data.paras_pos_tags, dev_data.paras_ner_tags,
+                         dev_data.question_pos_tags, dev_data.question_ner_tags,
+                         num_pos_tags, num_ner_tags),
               networks = ["0", "1"])
 
       # Add predictions to all answers.
@@ -454,10 +485,11 @@ def test_model(args):
 
   # Build model
   num_pos_tags = len(train_data.dictionary.pos_tags)
+  num_ner_tags = len(train_data.dictionary.ner_tags)
   model, config = build_model(args, train_data.dictionary.size(),
                               train_data.dictionary.index_to_word,
                               train_data.dictionary.word_to_index,
-                              num_pos_tags)
+                              num_pos_tags, num_ner_tags)
   print(model)
 
   #------------------------- Reload and test model ----------------------------#
@@ -489,7 +521,9 @@ def test_model(args):
     # distributions[{0,1}][{0,1}].shape = (batch, max_passage_len)
     distributions = \
         model(*get_batch(test_batch, test_ques_to_para, test_tokenized_paras,
-                         test_data.paras_tags, num_pos_tags),
+                         test_data.paras_pos_tags, test_data.paras_ner_tags,
+                         test_data.question_pos_tags, test_data.question_ner_tags,
+                         num_pos_tags, num_ner_tags),
               networks = ["0", "1"])
 
     # Add predictions to all answers.

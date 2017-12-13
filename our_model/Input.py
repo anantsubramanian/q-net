@@ -1,12 +1,65 @@
+import corenlp
 import cPickle as pickle
 import gzip
 import json
 import numpy
 import string
 import sys
+import time
 
-from nltk.tokenize import sent_tokenize, word_tokenize
-from nltk import pos_tag
+from joblib import Parallel, delayed
+from pycorenlp import StanfordCoreNLP
+from tqdm import tqdm
+
+# Define URL of running StanfordCoreNLPServer.
+corenlp_url = 'http://localhost:9001'
+max_tries = 10
+
+def word_tokenize(idx, sentence):
+  stanford_corenlp = StanfordCoreNLP(corenlp_url)
+  tries = 0
+  while True:
+    try:
+      annotation = stanford_corenlp.annotate(
+        sentence.encode('utf8'),
+        properties = { 'annotators': 'tokenize',
+                       'outputFormat': 'json' })
+      assert type(annotation) == dict
+      break
+    except Exception:
+      time.sleep(1)
+      tries += 1
+      if tries == 10:
+        return (idx, None)
+      pass
+  tokens = []
+  tokens.extend([ token['word'] for token in annotation['tokens'] ])
+  return (idx, tokens)
+
+def tokenize_and_tag(idx, sentence):
+  stanford_corenlp = StanfordCoreNLP(corenlp_url)
+  tries = 0
+  while True:
+    try:
+      annotation = stanford_corenlp.annotate(
+        sentence.encode('utf8'),
+        properties = { 'annotators': 'tokenize,pos,ner',
+                       'outputFormat': 'json' })
+      assert type(annotation) == dict
+      break
+    except Exception:
+      time.sleep(1)
+      tries += 1
+      if tries == 10:
+        print "Failed for %s" % sentence
+        return (idx, None, None, None)
+      pass
+  tokens, pos_tags, ner_tags = [], [], []
+  for sentence in annotation['sentences']:
+    tokens.extend([ token['word'] for token in sentence['tokens'] ])
+    pos_tags.extend([ token['pos'] for token in sentence['tokens'] ])
+    ner_tags.extend([ token['ner'] for token in sentence['tokens'] ])
+  return (idx, tokens, pos_tags, ner_tags)
 
 class Dictionary:
   def __init__(self, lowercase=True, remove_punctuation=True,
@@ -20,6 +73,7 @@ class Dictionary:
     self.answer_end = answer_end
     self.pad_index = self.add_or_get_index('<pad>')
     self.pos_tags = dict()
+    self.ner_tags = dict()
 
   def size(self):
     return len(self.index_to_word)
@@ -42,11 +96,17 @@ class Dictionary:
     self.index_to_word.append(word)
     return new_index
 
-  def add_or_get_tag(self, tag):
-    if tag in self.pos_tags:
-      return self.pos_tags[tag]
-    self.pos_tags[tag] = len(self.pos_tags)
-    return self.pos_tags[tag]
+  def add_or_get_postag(self, pos_tag):
+    if pos_tag in self.pos_tags:
+      return self.pos_tags[pos_tag]
+    self.pos_tags[pos_tag] = len(self.pos_tags)
+    return self.pos_tags[pos_tag]
+
+  def add_or_get_nertag(self, ner_tag):
+    if ner_tag in self.ner_tags:
+      return self.ner_tags[ner_tag]
+    self.ner_tags[ner_tag] = len(self.ner_tags)
+    return self.ner_tags[ner_tag]
 
   def get_index(self, word):
     if word == self.answer_start or word == self.answer_end:
@@ -65,6 +125,99 @@ class Dictionary:
     self.mutable = False
 
 
+def get_sent_start_end(tokenized_para, ans_start_idx, ans_end_idx):
+  sentence_end_markers = [ ".", "...", "!", "?", ";" ]
+  start_idx = ans_start_idx
+  end_idx = ans_end_idx
+  while start_idx > 0 and \
+        tokenized_para[start_idx] not in sentence_end_markers:
+    start_idx -= 1
+  while end_idx < len(tokenized_para) and \
+        tokenized_para[end_idx] not in sentence_end_markers:
+    end_idx += 1
+
+  # Ignore the punctuation if necessary.
+  if not start_idx == ans_start_idx:
+    start_idx += 1
+  if not end_idx == ans_end_idx:
+    end_idx -= 1
+
+  return start_idx, end_idx
+
+def f1_score(start, end, ans_start_idx, ans_end_idx):
+  # Get the F1 score for two given ranges: candidate range and true range.
+  if end < start:
+    return 0.0
+  intersection = min(end, ans_end_idx) - max(start, ans_start_idx)
+  if intersection < 0:
+    return 0.0
+  intersection += 1
+  true = ans_end_idx - ans_start_idx + 1
+  ours = end - start + 1
+  precision = intersection/float(ours)
+  recall = intersection/float(true)
+  return 2 * precision * recall / (precision + recall)
+
+# Create question-answer tuple with required information.
+def create_data(qid, para_text, tokenized_para, tokenized_para_words,
+                processed_question, dictionary, question, answers):
+  missed = 0
+  processed_answers = []
+  sentence_idxs = []
+  for answer in answers:
+    start_idx = answer['answer_start']
+    end_idx = start_idx + len(answer['text'])
+    para_text_modified = para_text[:start_idx] + " " + \
+                         dictionary.answer_start + " " + \
+                         para_text[start_idx:end_idx] + " " + \
+                         dictionary.answer_end + " " + \
+                         para_text[end_idx:]
+    answer_idxs = \
+      [ i for i,idx in \
+          enumerate([ dictionary.get_index(w) for w in \
+                        word_tokenize(None, para_text_modified)[1] ]) \
+          if idx == -1 ]
+    answer_idxs[1] -= 2
+
+    # Valid answers should lie within bounds.
+    if answer_idxs[0] < 0 or answer_idxs[0] >= len(tokenized_para) \
+       or answer_idxs[1] < 0 or answer_idxs[1] >= len(tokenized_para):
+      print "\n" * 3
+      print "Invalid answer \"%s\" ignored. (%d,%d)\n" % \
+            (answer['text'], answer_idxs[0], answer_idxs[1])
+      print "Question: %s\n" % question
+      print "Paragraph: %s" % para_text
+      print "\n" * 3
+      missed += 1
+      continue
+
+    processed_answers.append(answer_idxs)
+
+    # Store paragraph sentence start and end indexes for input.
+    sentence_idxs.append(get_sent_start_end(tokenized_para_words,
+                                            answer_idxs[0],
+                                            answer_idxs[1]))
+    assert sentence_idxs[-1][0] >= 0 and \
+           sentence_idxs[-1][0] < len(tokenized_para_words) and \
+           sentence_idxs[-1][0] <= answer_idxs[0]
+    assert sentence_idxs[-1][1] >= sentence_idxs[-1][0] and \
+           sentence_idxs[-1][1] < len(tokenized_para_words) and \
+           sentence_idxs[-1][1] >= answer_idxs[1]
+
+  # Create question-answer tuples.
+  data = []
+  for processed_answer, sentence_idx in zip(processed_answers, sentence_idxs):
+    f1_partial_matrix = numpy.zeros((processed_answer[1]+1,
+                                     len(tokenized_para)-processed_answer[0]))
+    for start in range(0,processed_answer[1]+1):
+      for end in range(max(start,processed_answer[0]),len(tokenized_para)):
+        f1_partial_matrix[start, end-processed_answer[0]] = \
+          f1_score(start, end, processed_answer[0], processed_answer[1])
+    data.append([processed_question, processed_answer, qid,
+                 f1_partial_matrix, sentence_idx])
+
+  return data, missed
+
 class Data:
   def __init__(self, dictionary=None, immutable=False):
     self.dictionary = Dictionary(lowercase=False,
@@ -73,11 +226,17 @@ class Data:
       self.dictionary = dictionary
     if immutable:
       self.dictionary.set_immutable()
-    self.sentence_end_markers = [ ".", "...", "!", "?", ";" ]
     self.questions = {}
+    self.questions_tokenized = {}
+    self.questions_tokenized_words = {}
+    self.answers = {}
+    self.question_ner_tags = {}
+    self.question_pos_tags = {}
     self.paragraphs = []
     self.tokenized_paras = []
-    self.paras_tags = []
+    self.tokenized_para_words = []
+    self.paras_pos_tags = []
+    self.paras_ner_tags = []
     self.question_to_paragraph = {}
     self.data = []
     self.missed = 0
@@ -86,8 +245,16 @@ class Data:
     del self.questions
     del self.paragraphs
     del self.question_to_paragraph
+    del self.questions_tokenized
+    del self.questions_tokenized_words
+    del self.answers
     del self.tokenized_paras
+    del self.tokenized_para_words
     del self.data
+    del self.question_ner_tags
+    del self.question_pos_tags
+    del self.paras_pos_tags
+    del self.paras_ner_tags
 
   def dump_pickle(self, filename):
     with gzip.open(filename + ".gz", 'wb') as fout:
@@ -100,142 +267,27 @@ class Data:
       fin.close()
       return self
 
-  def tokenize_para(self, para_text):
-    # Create tokenized paragraph representation.
-    tokenized_para = [ [ self.dictionary.add_or_get_index(word) \
-                         for word in word_tokenize(sent) ] \
-                           for sent in sent_tokenize(para_text) ]
-    tokenized_para = [ filter(None, x) for x in tokenized_para ]
-    tokenized_para = [ x for x in tokenized_para if len(x) > 0 ]
-    joined_para = []
-    map(joined_para.extend, tokenized_para)
+  def get_ids(self, tokenized_text):
+    return [ self.dictionary.add_or_get_index(word) \
+               for word in tokenized_text ]
 
-    sentences = len(tokenized_para)
-    if sentences == 0:
-      print "Found no sentences for para:", para_text
-      return None
-
-    return joined_para
-
-  def word_tokenize_para(self, para_text):
-    # Create tokenized paragraph representation.
-    tokenized_para_words = word_tokenize(para_text)
-    tokenized_para = [ self.dictionary.add_or_get_index(word) \
-                         for word in tokenized_para_words ]
-    return tokenized_para, tokenized_para_words
-
-  def f1_score(self, start, end, ans_start_idx, ans_end_idx):
-    # Get the F1 score for two given ranges: candidate range and true range.
-    if end < start:
-      return 0.0
-    intersection = min(end, ans_end_idx) - max(start, ans_start_idx)
-    if intersection < 0:
-      return 0.0
-    intersection += 1
-    true = ans_end_idx - ans_start_idx + 1
-    ours = end - start + 1
-    precision = intersection/float(ours)
-    recall = intersection/float(true)
-    return 2 * precision * recall / (precision + recall)
-
-  def get_sent_start_end(self, tokenized_para, ans_start_idx, ans_end_idx):
-    start_idx = ans_start_idx
-    end_idx = ans_end_idx
-    while start_idx > 0 and \
-          tokenized_para[start_idx] not in self.sentence_end_markers:
-      start_idx -= 1
-    while end_idx < len(tokenized_para) and \
-          tokenized_para[end_idx] not in self.sentence_end_markers:
-      end_idx += 1
-
-    # Ignore the punctuation if necessary.
-    if not start_idx == ans_start_idx:
-      start_idx += 1
-    if not end_idx == ans_end_idx:
-      end_idx -= 1
-
-    return start_idx, end_idx
+  def get_ids_immutable(self, tokenized_text):
+    return [ self.dictionary.get_index(word) \
+               for word in tokenized_text ]
 
   def add_paragraph(self, paragraph):
     para_text = paragraph['context']
     para_qas = paragraph['qas']
 
-    # Store tokenized paragraph.
-    tokenized_para, tokenized_para_words = self.word_tokenize_para(para_text)
-    self.tokenized_paras.append(tokenized_para)
-    _, para_tags = zip(*pos_tag(tokenized_para_words))
-    para_tags = [ self.dictionary.add_or_get_tag(tag) for tag in para_tags ]
-    self.paras_tags.append(para_tags)
-
     for qa in para_qas:
       # Questions of length <= 2 words are ignored
-      if len(word_tokenize(qa['question'])) <= 2:
+      if len(qa['question'].split()) <= 2:
         continue
       self.question_to_paragraph[qa['id']] = len(self.paragraphs)
       self.questions[qa['id']] = qa['question']
+      self.answers[qa['id']] = qa['answers']
 
-      # Tokenize question
-      tokenized_question = word_tokenize(qa['question'])
-      processed_question = [ self.dictionary.add_or_get_index(word) \
-                               for word in tokenized_question ]
-      processed_question = filter(None, processed_question)
-      _, question_tags = zip(*pos_tag(tokenized_question))
-      question_tags = [ self.dictionary.add_or_get_tag(tag) for tag in question_tags ]
-
-      # Tokenize answer phrases
-      processed_answers = []
-      sentence_idxs = []
-      for answer in qa['answers']:
-        start_idx = answer['answer_start']
-        end_idx = start_idx + len(answer['text'])
-        para_text_modified = para_text[:start_idx] + " " + \
-                             self.dictionary.answer_start + " " + \
-                             para_text[start_idx:end_idx] + " " + \
-                             self.dictionary.answer_end + " " + \
-                             para_text[end_idx:]
-        answer_idxs = [ i for i,idx in \
-                          enumerate(self.word_tokenize_para(para_text_modified)[0]) \
-                          if idx == -1 ]
-        answer_idxs[1] -= 2
-
-        # Valid answers should lie within bounds.
-        if answer_idxs[0] < 0 or answer_idxs[0] >= len(tokenized_para) \
-           or answer_idxs[1] < 0 or answer_idxs[1] >= len(tokenized_para):
-          print "\n" * 3
-          print "Invalid answer \"%s\" ignored. (%d,%d)\n" % \
-                (answer['text'], answer_idxs[0], answer_idxs[1])
-          print "Question: %s\n" % qa['question']
-          print "Paragraph: %s" % para_text
-          print "\n" * 3
-          self.missed += 1
-          continue
-
-        processed_answers.append(answer_idxs)
-
-        # Store paragraph sentence start and end indexes for input.
-        sentence_idxs.append(self.get_sent_start_end(tokenized_para_words,
-                                                     answer_idxs[0],
-                                                     answer_idxs[1]))
-        assert sentence_idxs[-1][0] >= 0 and \
-               sentence_idxs[-1][0] < len(tokenized_para_words) and \
-               sentence_idxs[-1][0] <= answer_idxs[0]
-        assert sentence_idxs[-1][1] >= sentence_idxs[-1][0] and \
-               sentence_idxs[-1][1] < len(tokenized_para_words) and \
-               sentence_idxs[-1][1] >= answer_idxs[1]
-
-      # Create question-answer pairs
-      for processed_answer, sentence_idx in zip(processed_answers, sentence_idxs):
-        f1_partial_matrix = numpy.zeros((processed_answer[1]+1, len(tokenized_para)-processed_answer[0]))
-        for start in range(0,processed_answer[1]+1):
-          for end in range(max(start,processed_answer[0]),len(tokenized_para)):
-            f1_partial_matrix[start, end-processed_answer[0]] = \
-              self.f1_score(start, end, processed_answer[0], processed_answer[1])
-        self.data.append([processed_question, processed_answer, qa['id'], f1_partial_matrix,
-                          question_tags, sentence_idx])
-
-    # Store paragraph text
     self.paragraphs.append(para_text)
-
 
   def read_from_file(self, filename, max_articles):
     dev_data = {}
@@ -257,6 +309,74 @@ class Data:
                   % (article_index+1, para_index+1),
           sys.stdout.flush()
       print ""
+
+    print "Tokenizing paragraphs (%d total)..." % len(self.paragraphs)
+    _, self.tokenized_para_words, self.paras_pos_tags, self.paras_ner_tags = \
+      zip(*Parallel(n_jobs=-1, verbose=2)(
+        delayed(tokenize_and_tag)(None, para_text) for para_text in self.paragraphs))
+    self.tokenized_para_words = list(self.tokenized_para_words)
+    for tokenized_para_words in tqdm(self.tokenized_para_words):
+      if tokenized_para_words is None:
+        self.tokenized_paras.append(None)
+        continue
+      self.tokenized_paras.append(self.get_ids(tokenized_para_words))
+    self.paras_pos_tags = list(self.paras_pos_tags)
+    for sent_id, pos_tagged_para in tqdm(enumerate(self.paras_pos_tags)):
+      if pos_tagged_para is None:
+        continue
+      assert len(pos_tagged_para) == len(self.tokenized_paras[sent_id]), str(sent_id)
+      self.paras_pos_tags[sent_id] = \
+        [ self.dictionary.add_or_get_postag(tag) for tag in pos_tagged_para ]
+    self.paras_ner_tags = list(self.paras_ner_tags)
+    for sent_id, ner_tagged_para in tqdm(enumerate(self.paras_ner_tags)):
+      if ner_tagged_para is None:
+        continue
+      assert len(ner_tagged_para) == len(self.tokenized_paras[sent_id]), str(sent_id)
+      self.paras_ner_tags[sent_id] = \
+        [ self.dictionary.add_or_get_nertag(tag) for tag in ner_tagged_para ]
+    print "Done!"
+
+    print "Tokenizing questions (%d total)..." % len(self.questions)
+    qids, self.questions_tokenized_words, self.question_pos_tags, self.question_ner_tags  = \
+      zip(*Parallel(n_jobs=-1, verbose=10)(
+        delayed(tokenize_and_tag)(qid, self.questions[qid]) for qid in self.questions))
+    self.questions_tokenized_words = dict(zip(qids, self.questions_tokenized_words))
+    self.question_pos_tags = dict(zip(qids, self.question_pos_tags))
+    self.question_ner_tags = dict(zip(qids, self.question_ner_tags))
+    for qid in tqdm(self.questions):
+      if self.questions_tokenized_words[qid] is None:
+        continue
+      self.questions_tokenized[qid] = self.get_ids(self.questions_tokenized_words[qid])
+    for qid in tqdm(self.question_pos_tags):
+      if self.question_pos_tags[qid] is None:
+        continue
+      assert len(self.question_pos_tags[qid]) == len(self.questions_tokenized_words[qid]),\
+             str(qid)
+      self.question_pos_tags[qid] = \
+        [ self.dictionary.add_or_get_postag(tag) for tag in self.question_pos_tags[qid] ]
+    for qid in tqdm(self.question_ner_tags):
+      if self.question_ner_tags[qid] is None:
+        continue
+      assert len(self.question_ner_tags[qid]) == len(self.question_pos_tags[qid]),\
+             str(qid)
+      self.question_ner_tags[qid] = \
+        [ self.dictionary.add_or_get_nertag(tag) for tag in self.question_ner_tags[qid] ]
+    print "Done!"
+
+    to_process = (sum([ len(self.answers[qid]) for qid in self.questions ]))
+    print "Creating data tuples for input (%d total)..." % to_process
+    qtop = self.question_to_paragraph
+    data, missed = \
+      zip(*Parallel(n_jobs=-1, verbose=10, batch_size=10000)\
+             (delayed(create_data)(qid, self.paragraphs[qtop[qid]],
+                                   self.tokenized_paras[qtop[qid]],
+                                   self.tokenized_para_words[qtop[qid]],
+                                   self.questions_tokenized[qid], self.dictionary,
+                                   self.questions[qid], self.answers[qid]) \
+                for qid in self.questions_tokenized))
+    self.data = [ item for sublist in data for item in sublist ]
+    self.missed = sum(missed)
+    print "Done!"
 
     return dev_data
 
