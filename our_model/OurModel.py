@@ -195,7 +195,7 @@ class OurModel(nn.Module):
 
   # Get a question-aware passage representation.
   def match_question_passage(self, layer_no, Hpi, Hq, max_passage_len,
-                             passage_lens, batch_size, mask, mask_q):
+                             passage_lens, batch_size, mask, mask_q_byte):
     # Initial hidden and cell states for forward and backward LSTMs.
     # h{f,b}.shape = (batch, hdim / 2)
     hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
@@ -227,8 +227,8 @@ class OurModel(nn.Module):
         # Mask out padded regions of question attention in the batch.
         # -inf ensures that the post-softmax output for those parts of the
         # output is zero.
-        alpha_f.masked_fill_(mask_q, -float('inf'))
-        alpha_b.masked_fill_(mask_q, -float('inf'))
+        alpha_f.masked_fill_(mask_q_byte, -float('inf'))
+        alpha_b.masked_fill_(mask_q_byte, -float('inf'))
 
         # alpha_{f,g}.shape = (seq_len, batch, 1)
         alpha_f = f.softmax(alpha_f, dim=0)
@@ -274,15 +274,17 @@ class OurModel(nn.Module):
   # start and end indices. Returns the hidden states, as well as the predicted
   # distributions.
   def answer_pointer(self, Hr, Hp, Hq, max_question_len, question_lens,
-                     max_passage_len, passage_lens, batch_size):
+                     max_passage_len, passage_lens, batch_size, mask_p_byte,
+                     mask_q_byte):
     # attended_input[_b].shape = (seq_len, batch, hdim)
     attended_input = getattr(self, 'attend_input')(Hr)
     attended_input_b = getattr(self, 'attend_input_b')(Hr)
 
     # weighted_Hq.shape = (batch, hdim)
     attended_question = f.tanh(getattr(self, 'attend_question')(Hq))
-    alpha_q = f.softmax(getattr(self, 'alpha_transform')(attended_question),
-                        dim=0)
+    alpha_q = getattr(self, 'alpha_transform')(attended_question)
+    alpha_q.masked_fill_(mask_q_byte, -float('inf'))
+    alpha_q = f.softmax(alpha_q, dim=0)
     weighted_Hq = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
                                           torch.transpose(Hq, 0, 1)), dim=1)
 
@@ -306,30 +308,18 @@ class OurModel(nn.Module):
       Fk_b = f.tanh(attended_input_b + \
                     getattr(self, 'attend_answer')(hb))
 
-      # beta_k[_b]_scores.shape = (seq_len, batch, 1)
-      beta_ks = []
-      beta_k_scores = getattr(self, 'beta_transform')(Fk)
-      beta_k_bs = []
-      beta_k_b_scores = getattr(self, 'beta_transform')(Fk_b)
-      # For each item in the batch, take a softmax over only the valid sequence
-      # length, and pad the rest with zeros.
-      for idx in range(batch_size):
-        beta_k_idx = f.softmax(beta_k_scores[:passage_lens[idx],idx,:], dim=0)
-        beta_k_b_idx = f.softmax(beta_k_b_scores[:passage_lens[idx],idx,:], dim=0)
+      # Get softmaxes over only valid paragraph lengths for each element in
+      # the batch.
+      # beta_k[_b].shape = (seq_len, batch, 1)
+      beta_k = getattr(self, 'beta_transform')(Fk)
+      beta_k_b = getattr(self, 'beta_transform')(Fk_b)
 
-        if beta_k_idx.size()[0] < max_passage_len:
-          diff = max_passage_len - beta_k_idx.size()[0]
-          zeros = self.variable(torch.zeros((diff, 1)))
-          beta_k_idx = torch.cat((beta_k_idx, zeros), dim=0)
-          beta_k_b_idx = torch.cat((beta_k_b_idx, zeros), dim=0)
+      # Mask out padded regions.
+      beta_k.masked_fill_(mask_p_byte, -float('inf'))
+      beta_k_b.masked_fill_(mask_p_byte, -float('inf'))
 
-        # beta_k[_b]_idx.shape = (max_seq_len, 1)
-        beta_ks.append(beta_k_idx)
-        beta_k_bs.append(beta_k_b_idx)
-
-      # beta_k.shape = (seq_len, batch, 1)
-      beta_k = torch.stack(beta_ks, dim=1)
-      beta_k_b = torch.stack(beta_k_bs, dim=1)
+      beta_k = f.softmax(beta_k, dim=0)
+      beta_k_b = f.softmax(beta_k_b, dim=0)
 
       # Store distributions produced at start and end prediction steps.
       if k > 0:
@@ -362,11 +352,12 @@ class OurModel(nn.Module):
   # for training.
   def point_at_answer(self, Hr, Hp, Hq, max_question_len, question_lens,
                       max_passage_len, passage_lens, batch_size,
-                      answer, f1_matrices):
+                      answer, f1_matrices, mask_p_byte, mask_q_byte):
     # Predict the answer start and end indices.
     distribution = self.answer_pointer(Hr, Hp, Hq, max_question_len,
                                        question_lens, max_passage_len,
-                                       passage_lens, batch_size)
+                                       passage_lens, batch_size, mask_p_byte,
+                                       mask_q_byte)
 
     batch_losses = [ [] for _ in range(batch_size) ]
     # For each example in the batch, add the negative log of answer start
@@ -443,7 +434,8 @@ class OurModel(nn.Module):
     mask_q = self.get_mask_matrix(batch_size, max_question_len, question_lens)
 
     # mask_q.shape = (seq_len, batch, 1)
-    mask_q = (1-torch.stack(mask_q, dim=0)).byte()
+    mask_p_byte = (1-torch.stack(mask_p, dim=0)).byte()
+    mask_q_byte = (1-torch.stack(mask_q, dim=0)).byte()
 
     # Get embedded passage and question representations.
     if not self.use_glove:
@@ -483,7 +475,7 @@ class OurModel(nn.Module):
     Hr = Hp
     for layer_no in range(self.num_matchlstm_layers):
       Hr = self.match_question_passage(str(layer_no), Hr, Hq, max_passage_len,
-                                       passage_lens, batch_size, mask_p, mask_q)
+                                       passage_lens, batch_size, mask_p, mask_q_byte)
       # Question-aware passage representation dropout.
       Hr = getattr(self, 'dropout_passage_matchlstm_' + str(layer_no))(Hr)
 
@@ -509,7 +501,7 @@ class OurModel(nn.Module):
     answer_distributions_list, loss = \
       self.point_at_answer(Hr, Hp, Hq, max_question_len, question_lens,
                            max_passage_len, passage_lens, batch_size,
-                           answer, f1_matrices)
+                           answer, f1_matrices, mask_p_byte, mask_q_byte)
 
     if self.debug:
       loss.data[0]
