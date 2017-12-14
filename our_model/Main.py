@@ -92,6 +92,8 @@ def init_parser():
                       help = "Number of post-processing layers, before the answer pointer network.")
   parser.add_argument('--num_matchlstm_layers', type=int, default=1,
                       help = "Number of MatchLSTM layers to use.")
+  parser.add_argument('--num_selfmatch_layers', type=int, default=0,
+                      help = "Number of passage self-matching layers to use.")
   parser.add_argument('--f1_loss_multiplier', type=float, default=1.0,
                       help = "Multiply the Expected F1 loss by this value. Useful as this loss has a \
                               smaller magnitude than the MLE loss.")
@@ -186,7 +188,8 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags,
              'f1_loss_threshold' : args.f1_loss_threshold,
              'num_preprocessing_layers': args.num_preprocessing_layers,
              'num_postprocessing_layers': args.num_postprocessing_layers,
-             'num_matchlstm_layers': args.num_matchlstm_layers }
+             'num_matchlstm_layers': args.num_matchlstm_layers,
+             'num_selfmatch_layers': args.num_selfmatch_layers }
   print "Building model."
   model = OurModel(config, args.debug)
   print "Done!"

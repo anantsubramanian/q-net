@@ -44,6 +44,7 @@ class OurModel(nn.Module):
     self.num_preprocessing_layers = config['num_preprocessing_layers']
     self.num_postprocessing_layers = config['num_postprocessing_layers']
     self.num_matchlstm_layers = config['num_matchlstm_layers']
+    self.num_selfmatch_layers = config['num_selfmatch_layers']
 
   def build_model(self, debug):
     # Embedding look-up.
@@ -53,9 +54,11 @@ class OurModel(nn.Module):
       embeddings = np.zeros((self.vocab_size, self.embed_size))
       with open(self.glove_path) as f:
         for line in f:
+          word = line[:line.index(" ")]
+          if not word in self.word_to_index:
+            continue
           line = line.split()
-          if line[0] in self.word_to_index:
-            embeddings[self.word_to_index[line[0]]] = np.array(map(float,line[1:]))
+          embeddings[self.word_to_index[line[0]]] = np.array(map(float,line[1:]))
       for i, embedding in enumerate(embeddings):
         if sum(embedding) == 0:
           self.oov_count += 1
@@ -95,6 +98,21 @@ class OurModel(nn.Module):
       setattr(self, 'dropout_passage_matchlstm_' + str(layer_no),
               nn.Dropout(self.dropout))
 
+    # Passage self-matching layers.
+    for layer_no in range(self.num_selfmatch_layers):
+      setattr(self, 'attend_self_passage_' + str(layer_no),
+              nn.Linear(self.hidden_size, self.attention_size))
+      setattr(self, 'attend_self_hidden_' + str(layer_no),
+              nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
+      setattr(self, 'self_alpha_transform_' + str(layer_no),
+              nn.Linear(self.attention_size, 1))
+      # Final Self-matching LSTM cells (bi-directional).
+      setattr(self, 'self_match_lstm_' + str(layer_no),
+              nn.LSTMCell(input_size = self.hidden_size * 2,
+                          hidden_size = self.hidden_size // 2))
+      setattr(self, 'dropout_self_matchlstm_' + str(layer_no),
+              nn.Dropout(self.dropout))
+
     # Question-aware passage post-processing LSTM.
     if self.num_postprocessing_layers > 0:
       self.postprocessing_lstm = nn.LSTM(input_size = self.hidden_size,
@@ -112,8 +130,6 @@ class OurModel(nn.Module):
 
     # Attend to the input.
     setattr(self, 'attend_input',
-            nn.Linear(self.hidden_size, self.attention_size))
-    setattr(self, 'attend_input_b',
             nn.Linear(self.hidden_size, self.attention_size))
     # Attend to answer hidden state.
     setattr(self, 'attend_answer',
@@ -270,6 +286,78 @@ class OurModel(nn.Module):
     Hr = torch.cat((Hf, Hb), dim=-1)
     return Hr
 
+  # Get a self-aware (question-aware) passage representation.
+  def match_passage_passage(self, layer_no, Hr, max_passage_len, passage_lens,
+                            batch_size, mask_p_byte, mask_p):
+    # Initial hidden and cell states for forward and backward LSTMs.
+    # h{f,b}.shape = (batch, hdim / 2)
+    hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
+    hb, cb = self.get_initial_lstm(batch_size, self.hidden_size // 2)
+
+    # Get vectors zi for each i in passage.
+    # Attended passage is the same at each time step. Just compute it once.
+    # attended_passage.shape = (seq_len, batch, hdim)
+    attended_passage = getattr(self, 'attend_self_passage_' + layer_no)(Hr)
+    transposed_Hr = torch.transpose(Hr, 0, 1)
+    Hf, Hb = [], []
+    for i in range(max_passage_len):
+        forward_idx = i
+        backward_idx = max_passage_len-i-1
+        # g{f,b}.shape = (seq_len, batch, hdim)
+        gf = f.tanh(attended_passage + \
+                 getattr(self, 'attend_self_hidden_' + layer_no)(hf))
+        gb = f.tanh(attended_passage + \
+                 getattr(self, 'attend_self_hidden_' + layer_no)(hb))
+
+        # alpha_{f,g}.shape = (seq_len, batch, 1)
+        alpha_f = getattr(self, 'self_alpha_transform_' + layer_no)(gf)
+        alpha_b = getattr(self, 'self_alpha_transform_' + layer_no)(gb)
+
+        # Mask out padded regions of passage attention in the batch.
+        # -inf ensures that the post-softmax output for those parts of the
+        # output is zero.
+        alpha_f.masked_fill_(mask_p_byte, -float('inf'))
+        alpha_b.masked_fill_(mask_p_byte, -float('inf'))
+
+        # alpha_{f,g}.shape = (seq_len, batch, 1)
+        alpha_f = f.softmax(alpha_f, dim=0)
+        alpha_b = f.softmax(alpha_b, dim=0)
+
+        # Hr[{forward,backward}_idx].shape = (batch, hdim)
+        # weighted_Hr_{f,b}.shape = (batch, hdim)
+        weighted_Hr_f = torch.squeeze(torch.bmm(alpha_f.permute(1, 2, 0),
+                                      transposed_Hr), dim=1)
+        weighted_Hr_b = torch.squeeze(torch.bmm(alpha_b.permute(1, 2, 0),
+                                      transposed_Hr), dim=1)
+
+        # z{f,b}.shape = (batch, 2 * hdim)
+        zf = torch.cat((Hr[forward_idx], weighted_Hr_f), dim=-1)
+        zb = torch.cat((Hr[backward_idx], weighted_Hr_b), dim=-1)
+
+        # Take forward and backward LSTM steps, with zf and zb as inputs.
+        hf, cf = getattr(self, 'self_match_lstm_' + layer_no)(zf, (hf, cf))
+        hb, cb = getattr(self, 'self_match_lstm_' + layer_no)(zb, (hb, cb))
+
+        # Back to initial zero states for padded regions.
+        hf = hf * mask_p[forward_idx]
+        cf = cf * mask_p[forward_idx]
+        hb = hb * mask_p[backward_idx]
+        cb = cb * mask_p[backward_idx]
+
+        # Append hidden states to create Hf and Hb matrices.
+        # h{f,b}.shape = (batch, hdim / 2)
+        Hf.append(hf)
+        Hb.append(hb)
+
+    # H{f,b}.shape = (seq_len, batch, hdim / 2)
+    Hb = Hb[::-1]
+    Hf = torch.stack(Hf, dim=0)
+    Hb = torch.stack(Hb, dim=0)
+
+    # Hr.shape = (seq_len, batch, hdim)
+    Hr = torch.cat((Hf, Hb), dim=-1)
+    return Hr
+
   # Boundary pointer model, that gives probability distributions over the
   # start and end indices. Returns the hidden states, as well as the predicted
   # distributions.
@@ -278,7 +366,6 @@ class OurModel(nn.Module):
                      mask_q_byte):
     # attended_input[_b].shape = (seq_len, batch, hdim)
     attended_input = getattr(self, 'attend_input')(Hr)
-    attended_input_b = getattr(self, 'attend_input_b')(Hr)
 
     # weighted_Hq.shape = (batch, hdim)
     attended_question = f.tanh(getattr(self, 'attend_question')(Hq))
@@ -305,7 +392,7 @@ class OurModel(nn.Module):
       # Fk[_b].shape = (seq_len, batch, hdim)
       Fk = f.tanh(attended_input + \
                   getattr(self, 'attend_answer')(ha))
-      Fk_b = f.tanh(attended_input_b + \
+      Fk_b = f.tanh(attended_input + \
                     getattr(self, 'attend_answer')(hb))
 
       # Get softmaxes over only valid paragraph lengths for each element in
@@ -483,6 +570,18 @@ class OurModel(nn.Module):
       Hr.sum()
       print "Matching passage with question time: %.2fs" % \
             (time.time() - start_matching)
+      start_postprocess = time.time()
+
+    # (Question-aware) passage self-matching layers.
+    for layer_no in range(self.num_selfmatch_layers):
+      Hr = self.match_passage_passage(str(layer_no), Hr, max_passage_len,
+                                      passage_lens, batch_size, mask_p_byte, mask_p)
+      # Passage self-matching layer dropout.
+      Hr = getattr(self, 'dropout_self_matchlstm_' + str(layer_no))(Hr)
+
+    if self.debug and self.num_selfmatch_layers > 0:
+      Hr.sum()
+      print "Self-matching time: %.2fs" % (time.time() - start_postprocess)
       start_postprocess = time.time()
 
     if self.num_postprocessing_layers > 0:
