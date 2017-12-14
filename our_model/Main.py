@@ -69,7 +69,7 @@ def init_parser():
   parser.add_argument('--model_dir', default='./',
                       help = "Directory to dump the trained models after every epoch, as well as the \
                               dev predictions json files after every epoch.")
-  parser.add_argument('--batch_size', type=int, default=64,
+  parser.add_argument('--batch_size', type=int, default=32,
                       help = "Batch size to use during training.")
   parser.add_argument('--test_batch_size', type=int, default=32,
                       help = "Batch size to use during development and test data passes.")

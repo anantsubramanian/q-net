@@ -195,7 +195,7 @@ class OurModel(nn.Module):
 
   # Get a question-aware passage representation.
   def match_question_passage(self, layer_no, Hpi, Hq, max_passage_len,
-                             passage_lens, batch_size, mask):
+                             passage_lens, batch_size, mask, mask_q):
     # Initial hidden and cell states for forward and backward LSTMs.
     # h{f,b}.shape = (batch, hdim / 2)
     hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
@@ -221,8 +221,18 @@ class OurModel(nn.Module):
                  getattr(self, 'attend_passage_hidden_' + layer_no)(hb))
 
         # alpha_{f,g}.shape = (seq_len, batch, 1)
-        alpha_f = f.softmax(getattr(self, 'passage_alpha_transform_' + layer_no)(gf), dim=0)
-        alpha_b = f.softmax(getattr(self, 'passage_alpha_transform_' + layer_no)(gb), dim=0)
+        alpha_f = getattr(self, 'passage_alpha_transform_' + layer_no)(gf)
+        alpha_b = getattr(self, 'passage_alpha_transform_' + layer_no)(gb)
+
+        # Mask out padded regions of question attention in the batch.
+        # -inf ensures that the post-softmax output for those parts of the
+        # output is zero.
+        alpha_f.masked_fill_(mask_q, -float('inf'))
+        alpha_b.masked_fill_(mask_q, -float('inf'))
+
+        # alpha_{f,g}.shape = (seq_len, batch, 1)
+        alpha_f = f.softmax(alpha_f, dim=0)
+        alpha_b = f.softmax(alpha_b, dim=0)
 
         # Hp[{forward,backward}_idx].shape = (batch, hdim)
         # Hq = (seq_len, batch, hdim)
@@ -432,6 +442,9 @@ class OurModel(nn.Module):
     mask_p = self.get_mask_matrix(batch_size, max_passage_len, passage_lens)
     mask_q = self.get_mask_matrix(batch_size, max_question_len, question_lens)
 
+    # mask_q.shape = (seq_len, batch, 1)
+    mask_q = torch.stack(mask_q, dim=0).byte()
+
     # Get embedded passage and question representations.
     if not self.use_glove:
       p = torch.transpose(self.embedding(torch.t(padded_passage)), 0, 1)
@@ -470,7 +483,7 @@ class OurModel(nn.Module):
     Hr = Hp
     for layer_no in range(self.num_matchlstm_layers):
       Hr = self.match_question_passage(str(layer_no), Hr, Hq, max_passage_len,
-                                       passage_lens, batch_size, mask_p)
+                                       passage_lens, batch_size, mask_p, mask_q)
       # Question-aware passage representation dropout.
       Hr = getattr(self, 'dropout_passage_matchlstm_' + str(layer_no))(Hr)
 
