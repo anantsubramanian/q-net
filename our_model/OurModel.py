@@ -443,7 +443,7 @@ class OurModel(nn.Module):
     mask_q = self.get_mask_matrix(batch_size, max_question_len, question_lens)
 
     # mask_q.shape = (seq_len, batch, 1)
-    mask_q = torch.stack(mask_q, dim=0).byte()
+    mask_q = (1-torch.stack(mask_q, dim=0)).byte()
 
     # Get embedded passage and question representations.
     if not self.use_glove:
