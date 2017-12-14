@@ -97,8 +97,6 @@ def init_parser():
                               smaller magnitude than the MLE loss.")
   parser.add_argument('--f1_loss_threshold', type=float, default=-1.0,
                       help = "Only penalize F1 values below this threshold. -1 is the distribution loss.")
-  parser.add_argument('--combine_losses', action='store_true',
-                      help = "Combine both losses, instead of training in a multi-task setting.")
   parser.add_argument('--model_description',
                       help = "A useful model description to keep track of which model was run.")
   return parser
@@ -153,12 +151,7 @@ def read_and_process_data(args):
     dev = dev[:320]
     test = test[:320]
 
-  network_ids = ["0"] if args.f1_loss_multiplier == 0 else ["0", "1"]
-  if args.combine_losses:
-    train_order = [ (i, ["0", "1"]) for i in range(0, len(train), batch_size) ]
-  else:
-    train_order = [ (i,[x]) for i in range(0, len(train), batch_size) \
-                      for x in network_ids ]
+  train_order = [ i for i in range(0, len(train), batch_size) ]
   dev_order = [ i for i in range(0, len(dev), test_batch_size) ]
   test_order = [ i for i in range(0, len(test), test_batch_size) ]
   print "Done."
@@ -285,10 +278,9 @@ def get_batch(batch, ques_to_para, tokenized_paras, paras_pos_tags, paras_ner_ta
 #--------------- Get the answers from predicted distributions------------------#
 def get_batch_answers(args, batch, all_predictions, distributions, data):
   # Get numpy arrays out of the CUDA tensors.
-  for i in range(len(distributions)):
-    for j in range(len(distributions[i])):
-      for k in range(len(distributions[i][j])):
-        distributions[i][j][k] = distributions[i][j][k].data.cpu().numpy()
+  for j in range(len(distributions)):
+    for k in range(len(distributions[j])):
+      distributions[j][k] = distributions[j][k].data.cpu().numpy()
 
   # Add all batch qids to predictions dict, if they don't already exist.
   qids = [ example[2] for example in batch ]
@@ -302,25 +294,19 @@ def get_batch_answers(args, batch, all_predictions, distributions, data):
                  for example in batch ]
   paras_lens_in = [ len(para) for para in paras_in ]
 
-  mle = 0
-  f1 = 1
   best_idxs = []
-  # distributions => (mle/f1,forward/backward,start/end,batch,values). Phew!
+  # distributions => (forward/backward,start/end,batch,values). Phew!
   for idx in range(len(batch)):
     best_prob = -1
     best = [0, 0]
     max_end = paras_lens_in[idx]
-    for j, start_prob in enumerate(distributions[mle][0][0][idx][:max_end]):
+    for j, start_prob in enumerate(distributions[0][0][idx][:max_end]):
       cur_end_idx = max_end if args.max_answer_span == -1 \
                             else j + args.max_answer_span
-      end_idx = np.argmax(distributions[mle][0][1][idx][j:cur_end_idx] * \
-                          distributions[mle][1][0][idx][j:cur_end_idx] * \
-                          distributions[f1][0][1][idx][j:cur_end_idx] * \
-                          distributions[f1][1][0][idx][j:cur_end_idx])
-      prob = distributions[mle][0][1][idx][j+end_idx] * start_prob \
-             * distributions[mle][1][1][idx][j] * distributions[mle][1][0][idx][j+end_idx] \
-             * distributions[f1][0][1][idx][j+end_idx] * distributions[f1][0][0][idx][j] \
-             * distributions[f1][1][1][idx][j] * distributions[f1][1][0][idx][j+end_idx]
+      end_idx = np.argmax(distributions[0][1][idx][j:cur_end_idx] * \
+                          distributions[1][0][idx][j:cur_end_idx])
+      prob = distributions[0][1][idx][j+end_idx] * start_prob * \
+             distributions[1][1][idx][j] * distributions[1][0][idx][j+end_idx]
       if prob > best_prob:
         best_prob = prob
         best = [j, j+end_idx]
@@ -382,7 +368,8 @@ def train_model(args):
     optimizer = Adamax(model.parameters(), lr = args.learning_rate)
     if last_done_epoch > 0:
       if os.path.exists(args.model_dir + "/optim_%d.pt" % last_done_epoch):
-        optimizer = torch.load(args.model_dir + "/optim_%d.pt" % last_done_epoch)
+        optimizer.load_state_dict(
+          torch.load(args.model_dir + "/optim_%d.pt" % last_done_epoch))
       else:
         print "Optimizer saved state not found. Not loading optimizer."
   else:
@@ -394,7 +381,7 @@ def train_model(args):
     start_t = time.time()
     train_loss_sum = 0.0
     model.train()
-    for i, (num, network_ids) in enumerate(train_order):
+    for i, num in enumerate(train_order):
       print "\r[%.2f%%] Train epoch %d, %.2f s - (Done %d of %d)" %\
             ((100.0 * (i+1))/len(train_order), EPOCH,
              (time.time()-start_t)*(len(train_order)-i-1)/(i+1), i+1,
@@ -410,8 +397,7 @@ def train_model(args):
       model(*get_batch(train_batch, train_ques_to_para, train_tokenized_paras,
                        train_data.paras_pos_tags, train_data.paras_ner_tags,
                        train_data.question_pos_tags, train_data.question_ner_tags,
-                       num_pos_tags, num_ner_tags),
-            networks = network_ids)
+                       num_pos_tags, num_ner_tags))
       model.loss.backward()
       optimizer.step()
       train_loss_sum += model.loss.data[0]
@@ -433,7 +419,7 @@ def train_model(args):
     for param in optimizer.param_groups:
       param['lr'] *= config['decay_rate']
     if args.optimizer == "Adamax":
-      torch.save(optimizer, args.model_dir + "/optim_%d.pt" % EPOCH)
+      torch.save(optimizer.state_dict(), args.model_dir + "/optim_%d.pt" % EPOCH)
 
     # Run pass over dev data.
     dev_start_t = time.time()
@@ -455,8 +441,7 @@ def train_model(args):
         model(*get_batch(dev_batch, dev_ques_to_para, dev_tokenized_paras,
                          dev_data.paras_pos_tags, dev_data.paras_ner_tags,
                          dev_data.question_pos_tags, dev_data.question_ner_tags,
-                         num_pos_tags, num_ner_tags),
-              networks = ["0", "1"])
+                         num_pos_tags, num_ner_tags))
 
       # Add predictions to all answers.
       get_batch_answers(args, dev_batch, all_predictions, distributions,
@@ -525,13 +510,12 @@ def test_model(args):
     test_batch = test[num:num+test_batch_size]
     batch_size = len(test_batch)
 
-    # distributions[{0,1}][{0,1}].shape = (batch, max_passage_len)
+    # distributions[{0,1}].shape = (batch, max_passage_len)
     distributions = \
         model(*get_batch(test_batch, test_ques_to_para, test_tokenized_paras,
                          test_data.paras_pos_tags, test_data.paras_ner_tags,
                          test_data.question_pos_tags, test_data.question_ner_tags,
-                         num_pos_tags, num_ner_tags),
-              networks = ["0", "1"])
+                         num_pos_tags, num_ner_tags))
 
     # Add predictions to all answers.
     get_batch_answers(args, test_batch, all_predictions, distributions, test_data)

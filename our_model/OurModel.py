@@ -103,33 +103,29 @@ class OurModel(nn.Module):
                                          dropout = self.dropout,
                                          bidirectional = True)
 
-    # 2 answer pointer networks. First one identifies the answer sentence, while
-    # the second one identifies the correct answer span.
-    for network_no in range(2):
-      network_no = str(network_no)
-      # Answer pointer attention transformations.
-      # Question attentions for answer sentence pointer network.
-      setattr(self, 'attend_question_' + network_no,
-              nn.Linear(self.hidden_size, self.attention_size))
-      setattr(self, 'alpha_transform_' + network_no,
-              nn.Linear(self.attention_size, 1))
+    # Answer pointer attention transformations.
+    # Question attentions for answer sentence pointer network.
+    setattr(self, 'attend_question',
+            nn.Linear(self.hidden_size, self.attention_size))
+    setattr(self, 'alpha_transform',
+            nn.Linear(self.attention_size, 1))
 
-      # Attend to the input.
-      setattr(self, 'attend_input_' + network_no,
-              nn.Linear(self.hidden_size, self.attention_size))
-      setattr(self, 'attend_input_b_' + network_no,
-              nn.Linear(self.hidden_size, self.attention_size))
-      # Attend to answer hidden state.
-      setattr(self, 'attend_answer_' + network_no,
-              nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
+    # Attend to the input.
+    setattr(self, 'attend_input',
+            nn.Linear(self.hidden_size, self.attention_size))
+    setattr(self, 'attend_input_b',
+            nn.Linear(self.hidden_size, self.attention_size))
+    # Attend to answer hidden state.
+    setattr(self, 'attend_answer',
+            nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
 
-      setattr(self, 'beta_transform_' + network_no,
-              nn.Linear(self.attention_size, 1))
+    setattr(self, 'beta_transform',
+            nn.Linear(self.attention_size, 1))
 
-      # Answer pointer LSTM.
-      setattr(self, 'answer_pointer_lstm_' + network_no,
-              nn.LSTMCell(input_size = self.hidden_size * 2,
-                          hidden_size = self.hidden_size // 2))
+    # Answer pointer LSTM.
+    setattr(self, 'answer_pointer_lstm',
+            nn.LSTMCell(input_size = self.hidden_size * 2,
+                        hidden_size = self.hidden_size // 2))
 
   def save(self, path, epoch):
     torch.save(self, path + "/epoch_" + str(epoch) + ".pt")
@@ -267,15 +263,15 @@ class OurModel(nn.Module):
   # Boundary pointer model, that gives probability distributions over the
   # start and end indices. Returns the hidden states, as well as the predicted
   # distributions.
-  def answer_pointer(self, network_no, Hr, Hp, Hq, max_question_len, question_lens,
+  def answer_pointer(self, Hr, Hp, Hq, max_question_len, question_lens,
                      max_passage_len, passage_lens, batch_size):
     # attended_input[_b].shape = (seq_len, batch, hdim)
-    attended_input = getattr(self, 'attend_input_' + network_no)(Hr)
-    attended_input_b = getattr(self, 'attend_input_b_' + network_no)(Hr)
+    attended_input = getattr(self, 'attend_input')(Hr)
+    attended_input_b = getattr(self, 'attend_input_b')(Hr)
 
     # weighted_Hq.shape = (batch, hdim)
-    attended_question = f.tanh(getattr(self, 'attend_question_' + network_no)(Hq))
-    alpha_q = f.softmax(getattr(self, 'alpha_transform_' + network_no)(attended_question),
+    attended_question = f.tanh(getattr(self, 'attend_question')(Hq))
+    alpha_q = f.softmax(getattr(self, 'alpha_transform')(attended_question),
                         dim=0)
     weighted_Hq = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
                                           torch.transpose(Hq, 0, 1)), dim=1)
@@ -296,15 +292,15 @@ class OurModel(nn.Module):
     for k in range(3):
       # Fk[_b].shape = (seq_len, batch, hdim)
       Fk = f.tanh(attended_input + \
-                  getattr(self, 'attend_answer_' + network_no)(ha))
+                  getattr(self, 'attend_answer')(ha))
       Fk_b = f.tanh(attended_input_b + \
-                    getattr(self, 'attend_answer_' + network_no)(hb))
+                    getattr(self, 'attend_answer')(hb))
 
       # beta_k[_b]_scores.shape = (seq_len, batch, 1)
       beta_ks = []
-      beta_k_scores = getattr(self, 'beta_transform_' + network_no)(Fk)
+      beta_k_scores = getattr(self, 'beta_transform')(Fk)
       beta_k_bs = []
-      beta_k_b_scores = getattr(self, 'beta_transform_' + network_no)(Fk_b)
+      beta_k_b_scores = getattr(self, 'beta_transform')(Fk_b)
       # For each item in the batch, take a softmax over only the valid sequence
       # length, and pad the rest with zeros.
       for idx in range(batch_size):
@@ -346,42 +342,33 @@ class OurModel(nn.Module):
       ab = torch.cat((weighted_Hr_b, weighted_Hq), dim=-1)
 
       # LSTM step.
-      ha, ca = getattr(self, 'answer_pointer_lstm_' + network_no)(af, (ha, ca))
-      hb, cb = getattr(self, 'answer_pointer_lstm_' + network_no)(ab, (hb, cb))
+      ha, ca = getattr(self, 'answer_pointer_lstm')(af, (ha, ca))
+      hb, cb = getattr(self, 'answer_pointer_lstm')(ab, (hb, cb))
 
     return answer_distributions, answer_distributions_b
 
   # Boundary pointer model, that gives probability distributions over the
   # answer start and answer end indices. Additionally returns the loss
   # for training.
-  # "networks" parameter decides which networks to train in this step.
-  # "0" corresponds to the MLE loss network, while "1" corresponds to the
-  # F1 loss network.
-  def point_at_answer(self, networks, Hr, Hp, Hq, max_question_len,
-                      question_lens, max_passage_len, passage_lens, batch_size,
+  def point_at_answer(self, Hr, Hp, Hq, max_question_len, question_lens,
+                      max_passage_len, passage_lens, batch_size,
                       answer, f1_matrices):
     # Predict the answer start and end indices.
-    distributions = []
-    for network_id in networks:
-      distributions.append(
-        self.answer_pointer(network_id, Hr, Hp, Hq, max_question_len,
-                            question_lens, max_passage_len, passage_lens,
-                            batch_size))
+    distribution = self.answer_pointer(Hr, Hp, Hq, max_question_len,
+                                       question_lens, max_passage_len,
+                                       passage_lens, batch_size)
 
     batch_losses = [ [] for _ in range(batch_size) ]
-    if "0" in networks:
-      zero_idx = networks.index("0")
-      # For each example in the batch, add the negative log of answer start
-      # and end index probabilities to the MLE loss, from both forward and
-      # backward answer pointers.
-      for idx in range(batch_size):
-        batch_losses[idx].append(
-          distributions[zero_idx][0][0][idx, answer[0][idx]] *\
-          distributions[zero_idx][0][1][idx, answer[1][idx]] *\
-          distributions[zero_idx][1][0][idx, answer[1][idx]] *\
-          distributions[zero_idx][1][1][idx, answer[0][idx]])
-    if "1" in networks:
-      one_idx = networks.index("1")
+    # For each example in the batch, add the negative log of answer start
+    # and end index probabilities to the MLE loss, from both forward and
+    # backward answer pointers.
+    for idx in range(batch_size):
+      batch_losses[idx].append(
+        distribution[0][0][idx, answer[0][idx]] *\
+        distribution[0][1][idx, answer[1][idx]] *\
+        distribution[1][0][idx, answer[1][idx]] *\
+        distribution[1][1][idx, answer[0][idx]])
+    if self.f1_loss_multiplier > 0:
       # Compute the F1 distribution loss.
       # f1_matrices.shape = (batch, max_seq_len, max_seq_len)
       # If there is thresholding, only penalize values below that threshold.
@@ -390,11 +377,11 @@ class OurModel(nn.Module):
                                        to_float = True)
       else:
         f1_matrices = self.placeholder(f1_matrices)
-      loss_f1_f = (torch.bmm(torch.unsqueeze(distributions[one_idx][0][0], -1),
-                             torch.unsqueeze(distributions[one_idx][0][1], 1)) * \
+      loss_f1_f = (torch.bmm(torch.unsqueeze(distribution[0][0], -1),
+                             torch.unsqueeze(distribution[0][1], 1)) * \
                    f1_matrices).view(batch_size, -1).sum(1)
-      loss_f1_b = (torch.bmm(torch.unsqueeze(distributions[one_idx][1][1], -1),
-                             torch.unsqueeze(distributions[one_idx][1][0], 1)) * \
+      loss_f1_b = (torch.bmm(torch.unsqueeze(distribution[1][1], -1),
+                             torch.unsqueeze(distribution[1][0], 1)) * \
                    f1_matrices).view(batch_size, -1).sum(1)
       for idx in range(batch_size):
         batch_losses[idx].append(self.f1_loss_multiplier * loss_f1_f[idx] *\
@@ -404,7 +391,7 @@ class OurModel(nn.Module):
     for idx in range(batch_size):
       loss += -torch.log(sum(batch_losses[idx]) / (1 + self.f1_loss_multiplier))
     loss /= batch_size
-    return distributions, loss
+    return distribution, loss
 
   # Get matrix for padding hidden states of an LSTM running over the
   # given maximum length, for lengths in the batch.
@@ -427,11 +414,9 @@ class OurModel(nn.Module):
   # passage_pos_tags = (seq_len, batch, num_pos_tags)
   # passage_ner_tags = (seq_len, batch, num_ner_tags)
   # answer_sentence = ((2, batch))
-  # networks = list with either ["0"], ["1"] or ["0", "1"]
-  #            "0" corresponds to MLE network, and "1" to F1 network.
   def forward(self, passage, question, answer, f1_matrices,
               question_pos_tags, question_ner_tags, passage_pos_tags,
-              passage_ner_tags, answer_sentence, networks):
+              passage_ner_tags, answer_sentence):
     if not self.use_glove:
       padded_passage = self.placeholder(passage[0], False)
       padded_question = self.placeholder(question[0], False)
@@ -509,9 +494,9 @@ class OurModel(nn.Module):
     # and the loss for training.
     # At this point, Hr.shape = (seq_len, batch, hdim)
     answer_distributions_list, loss = \
-      self.point_at_answer(networks, Hr, Hp, Hq, max_question_len,
-                           question_lens, max_passage_len, passage_lens,
-                           batch_size, answer, f1_matrices)
+      self.point_at_answer(Hr, Hp, Hq, max_question_len, question_lens,
+                           max_passage_len, passage_lens, batch_size,
+                           answer, f1_matrices)
 
     if self.debug:
       loss.data[0]
