@@ -8,13 +8,13 @@ import torch.nn.functional as f
 from torch.autograd import Variable
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-class OurModel(nn.Module):
+class qNet(nn.Module):
   ''' Match-LSTM model definition. Properties specified in config.'''
 
   # Constructor
   def __init__(self, config, debug = False):
     # Call constructor of nn module.
-    super(OurModel, self).__init__()
+    super(qNet, self).__init__()
 
     # Set-up parameters from config.
     self.load_from_config(config)
@@ -101,7 +101,7 @@ class OurModel(nn.Module):
     # Passage self-matching layers.
     for layer_no in range(self.num_selfmatch_layers):
       setattr(self, 'attend_self_passage_' + str(layer_no),
-              nn.Linear(self.hidden_size, self.attention_size))
+              nn.Linear(self.hidden_size, self.attention_size, bias = False))
       setattr(self, 'attend_self_hidden_' + str(layer_no),
               nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
       setattr(self, 'self_alpha_transform_' + str(layer_no),
@@ -224,7 +224,8 @@ class OurModel(nn.Module):
     attended_passage = getattr(self, 'attend_passage_for_passage_' + layer_no)(Hpi)
     attention_q_plus_p = []
     for t in range(max_passage_len):
-      attention_q_plus_p.append(attended_question + attended_passage[t])
+      attention_q_plus_p.append(attended_question + \
+                                (attended_passage[t] * mask[t]))
     transposed_Hq = torch.transpose(Hq, 0, 1)
     Hf, Hb = [], []
     for i in range(max_passage_len):
