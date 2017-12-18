@@ -79,7 +79,7 @@ def init_parser():
                       help = "If true, GloVe vectors are not read, and train and dev data sizes are \
                               reduced to 3200 each. Useful for debugging passes of every part of the \
                               code.")
-  parser.add_argument('--dropout', type=float, default=0.4,
+  parser.add_argument('--dropout', type=float, default=0.5,
                       help = "Dropout drop probability between layers and modules of the network.")
   parser.add_argument('--cuda', action='store_true',
                       help = "Whether the model must be trained of an NVIDIA GPU device.")

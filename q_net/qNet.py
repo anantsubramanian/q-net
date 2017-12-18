@@ -78,6 +78,16 @@ class qNet(nn.Module):
               dropout = self.dropout,
               bidirectional = True)
 
+    # Tie forward and backward pre-processing LSTM weights.
+    for weight_type in ["hh", "ih"]:
+      for layer_no in range(self.num_preprocessing_layers):
+        weight_name = "weight_" + weight_type + "_l" + str(layer_no)
+        bias_name = "bias_" + weight_type + "_l" + str(layer_no)
+        setattr(self.preprocessing_lstm, weight_name + "_reverse",
+                getattr(self.preprocessing_lstm, weight_name))
+        setattr(self.preprocessing_lstm, bias_name + "_reverse",
+                getattr(self.preprocessing_lstm, bias_name))
+
     # Attention transformations (variable names below given against those in
     # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
     # and answer pointer." arXiv preprint arXiv:1608.07905 (2016).)
@@ -120,6 +130,16 @@ class qNet(nn.Module):
                                          num_layers = self.num_postprocessing_layers,
                                          dropout = self.dropout,
                                          bidirectional = True)
+
+    # Tie forward and backward post-processing LSTM weights.
+    for weight_type in ["hh", "ih"]:
+      for layer_no in range(self.num_postprocessing_layers):
+        weight_name = "weight_" + weight_type + "_l" + str(layer_no)
+        bias_name = "bias_" + weight_type + "_l" + str(layer_no)
+        setattr(self.postprocessing_lstm, weight_name + "_reverse",
+                getattr(self.postprocessing_lstm, weight_name))
+        setattr(self.postprocessing_lstm, bias_name + "_reverse",
+                getattr(self.postprocessing_lstm, bias_name))
 
     # Answer pointer attention transformations.
     # Question attentions for answer sentence pointer network.
