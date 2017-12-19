@@ -12,7 +12,7 @@ class qNet(nn.Module):
   ''' Q-NET model definition. Properties specified in config.'''
 
   # Constructor
-  def __init__(self, config, debug = False):
+  def __init__(self, config, debug_level = 0):
     # Call constructor of nn module.
     super(qNet, self).__init__()
 
@@ -20,8 +20,8 @@ class qNet(nn.Module):
     self.load_from_config(config)
 
     # Construct the model, storing all necessary layers.
-    self.build_model(debug)
-    self.debug = debug
+    self.build_model(debug_level)
+    self.debug_level = debug_level
 
   # Load configuration options
   def load_from_config(self, config):
@@ -46,11 +46,11 @@ class qNet(nn.Module):
     self.num_matchgru_layers = config['num_matchgru_layers']
     self.num_selfmatch_layers = config['num_selfmatch_layers']
 
-  def build_model(self, debug):
+  def build_model(self, debug_level):
     # Embedding look-up.
     self.oov_count = 0
     self.oov_list = []
-    if self.use_glove and not debug:
+    if self.use_glove and debug_level <= 1:
       embeddings = np.zeros((self.vocab_size, self.embed_size))
       with open(self.glove_path) as f:
         for line in f:
@@ -64,7 +64,7 @@ class qNet(nn.Module):
           self.oov_count += 1
           self.oov_list.append(self.index_to_word[i])
       self.embedding = embeddings
-    elif debug:
+    elif debug_level >= 2:
       self.embedding = np.zeros((self.vocab_size, self.embed_size))
     else:
       self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
@@ -536,7 +536,7 @@ class qNet(nn.Module):
     passage_lens = passage[1]
     question_lens = question[1]
 
-    if self.debug:
+    if self.debug_level >= 3:
       start_prepare = time.time()
 
     mask_p = self.get_mask_matrix(batch_size, max_passage_len, passage_lens)
@@ -566,7 +566,7 @@ class qNet(nn.Module):
     p = self.dropout_p(p)
     q = self.dropout_q(q)
 
-    if self.debug:
+    if self.debug_level >= 3:
       p.sum()
       q.sum()
       print "Data preparation time: %.2fs" % (time.time() - start_prepare)
@@ -579,7 +579,7 @@ class qNet(nn.Module):
     Hq = self.process_input_with_gru(q, max_question_len, question_lens, batch_size,
                                      self.preprocessing_gru)
 
-    if self.debug:
+    if self.debug_level >= 3:
       Hp.sum()
       Hq.sum()
       print "Data pre-processing time: %.2fs" % (time.time() - start_preprocess)
@@ -594,7 +594,7 @@ class qNet(nn.Module):
       # Question-aware passage representation dropout.
       Hr = getattr(self, 'dropout_passage_matchgru_' + str(layer_no))(Hr)
 
-    if self.debug:
+    if self.debug_level >= 3:
       Hr.sum()
       print "Matching passage with question time: %.2fs" % \
             (time.time() - start_matching)
@@ -608,7 +608,7 @@ class qNet(nn.Module):
       # Passage self-matching layer dropout.
       Hr = getattr(self, 'dropout_self_matchgru_' + str(layer_no))(Hr)
 
-    if self.debug and self.num_selfmatch_layers > 0:
+    if self.debug_level >= 3 and self.num_selfmatch_layers > 0:
       Hr.sum()
       print "Self-matching time: %.2fs" % (time.time() - start_postprocess)
       start_postprocess = time.time()
@@ -617,7 +617,7 @@ class qNet(nn.Module):
       Hr = self.process_input_with_gru(Hr, max_passage_len, passage_lens, batch_size,
                                        self.postprocessing_gru)
 
-    if self.debug:
+    if self.debug_level >= 3:
       Hr.sum()
       print "Post-processing question-aware passage time: %.2fs" % \
             (time.time() - start_postprocess)
@@ -632,7 +632,7 @@ class qNet(nn.Module):
                            answer, f1_matrices, mask_p_byte, mask_q_byte,
                            mask_p_zero, mask_q_zero)
 
-    if self.debug:
+    if self.debug_level >= 3:
       loss.data[0]
       print "Answer pointer time: %.2fs" % (time.time() - start_answer)
 

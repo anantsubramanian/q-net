@@ -79,10 +79,11 @@ def init_parser():
                       help = "Batch size to use during development and test data passes.")
   parser.add_argument('--optimizer', default='Adamax',
                       help = "Optimizer to use. One of either 'SGD', 'Adamax' or 'Adadelta'.")
-  parser.add_argument('--debug', action='store_true',
-                      help = "If true, GloVe vectors are not read, and train and dev data sizes are \
-                              reduced to 3200 each. Useful for debugging passes of every part of the \
-                              code.")
+  parser.add_argument('--debug_level', type=int, default=0,
+                      help = "Level 1: train and dev data sizes are reduced to 3200 each. \
+                              Level 2: GloVe vectors are not read. \
+                              Level 3: Timing statements are printed. \
+                              Useful for debugging passes of differents parts of the code.")
   parser.add_argument('--dropout', type=float, default=0.4,
                       help = "Dropout drop probability between layers and modules of the network.")
   parser.add_argument('--cuda', action='store_true',
@@ -152,7 +153,7 @@ def read_and_process_data(args):
   print "Done."
 
   # Debug flag reduces size of input data, for testing purposes.
-  if args.debug:
+  if args.debug_level > 0:
     train = train[:320]
     dev = dev[:320]
     test = test[:320]
@@ -195,7 +196,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags,
              'num_matchgru_layers': args.num_matchgru_layers,
              'num_selfmatch_layers': args.num_selfmatch_layers }
   print "Building model."
-  model = qNet(config, args.debug)
+  model = qNet(config, args.debug_level)
   print "Done!"
   sys.stdout.flush()
 
@@ -414,7 +415,7 @@ def train_model(args):
       print "Loss Total: %.5f, Cur: %.5f (in time %.2fs)" % \
             (train_loss_sum/(i+1), model.loss.data[0], time.time() - start_t),
       sys.stdout.flush()
-      if args.debug:
+      if args.debug_level >= 3:
         print ""
       del model.loss
 
