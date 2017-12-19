@@ -9,7 +9,7 @@ from torch.autograd import Variable
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 class qNet(nn.Module):
-  ''' Match-LSTM model definition. Properties specified in config.'''
+  ''' Q-NET model definition. Properties specified in config.'''
 
   # Constructor
   def __init__(self, config, debug = False):
@@ -43,7 +43,7 @@ class qNet(nn.Module):
     self.num_ner_tags = config['num_ner_tags']
     self.num_preprocessing_layers = config['num_preprocessing_layers']
     self.num_postprocessing_layers = config['num_postprocessing_layers']
-    self.num_matchlstm_layers = config['num_matchlstm_layers']
+    self.num_matchgru_layers = config['num_matchgru_layers']
     self.num_selfmatch_layers = config['num_selfmatch_layers']
 
   def build_model(self, debug):
@@ -74,28 +74,28 @@ class qNet(nn.Module):
     self.dropout_p = nn.Dropout(self.dropout)
     self.dropout_q = nn.Dropout(self.dropout)
 
-    # Passage and Question pre-processing LSTMs (matrices Hp and Hq respectively).
-    self.preprocessing_lstm = \
-      nn.LSTM(input_size = self.embed_size + self.num_pos_tags + self.num_ner_tags,
-              hidden_size = self.hidden_size // 2,
-              num_layers = self.num_preprocessing_layers,
-              dropout = self.dropout,
-              bidirectional = True)
+    # Passage and Question pre-processing GRUs (matrices Hp and Hq respectively).
+    self.preprocessing_gru = \
+      nn.GRU(input_size = self.embed_size + self.num_pos_tags + self.num_ner_tags,
+             hidden_size = self.hidden_size // 2,
+             num_layers = self.num_preprocessing_layers,
+             dropout = self.dropout,
+             bidirectional = True)
 
-    # Tie forward and backward pre-processing LSTM weights.
+    # Tie forward and backward pre-processing GRU weights.
     for weight_type in ["hh", "ih"]:
       for layer_no in range(self.num_preprocessing_layers):
         weight_name = "weight_" + weight_type + "_l" + str(layer_no)
         bias_name = "bias_" + weight_type + "_l" + str(layer_no)
-        setattr(self.preprocessing_lstm, weight_name + "_reverse",
-                getattr(self.preprocessing_lstm, weight_name))
-        setattr(self.preprocessing_lstm, bias_name + "_reverse",
-                getattr(self.preprocessing_lstm, bias_name))
+        setattr(self.preprocessing_gru, weight_name + "_reverse",
+                getattr(self.preprocessing_gru, weight_name))
+        setattr(self.preprocessing_gru, bias_name + "_reverse",
+                getattr(self.preprocessing_gru, bias_name))
 
     # Attention transformations (variable names below given against those in
     # Wang, Shuohang, and Jing Jiang. "Machine comprehension using match-lstm
     # and answer pointer." arXiv preprint arXiv:1608.07905 (2016).)
-    for layer_no in range(self.num_matchlstm_layers):
+    for layer_no in range(self.num_matchgru_layers):
       setattr(self, 'attend_question_for_passage_' + str(layer_no),
               nn.Linear(self.hidden_size, self.attention_size,
                         bias = False))
@@ -105,11 +105,11 @@ class qNet(nn.Module):
               nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
       setattr(self, 'passage_alpha_transform_' + str(layer_no),
               nn.Linear(self.attention_size, 1))
-      # Final Match-LSTM cells (bi-directional).
-      setattr(self, 'passage_match_lstm_' + str(layer_no),
-              nn.LSTMCell(input_size = self.hidden_size * 2,
-                          hidden_size = self.hidden_size // 2))
-      setattr(self, 'dropout_passage_matchlstm_' + str(layer_no),
+      # Final Match-GRU cells (bi-directional).
+      setattr(self, 'passage_match_gru_' + str(layer_no),
+              nn.GRUCell(input_size = self.hidden_size * 2,
+                         hidden_size = self.hidden_size // 2))
+      setattr(self, 'dropout_passage_matchgru_' + str(layer_no),
               nn.Dropout(self.dropout))
 
     # Passage self-matching layers.
@@ -120,30 +120,30 @@ class qNet(nn.Module):
               nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
       setattr(self, 'self_alpha_transform_' + str(layer_no),
               nn.Linear(self.attention_size, 1))
-      # Final Self-matching LSTM cells (bi-directional).
-      setattr(self, 'self_match_lstm_' + str(layer_no),
-              nn.LSTMCell(input_size = self.hidden_size * 2,
-                          hidden_size = self.hidden_size // 2))
-      setattr(self, 'dropout_self_matchlstm_' + str(layer_no),
+      # Final Self-matching GRU cells (bi-directional).
+      setattr(self, 'self_match_gru_' + str(layer_no),
+              nn.GRUCell(input_size = self.hidden_size * 2,
+                         hidden_size = self.hidden_size // 2))
+      setattr(self, 'dropout_self_matchgru_' + str(layer_no),
               nn.Dropout(self.dropout))
 
-    # Question-aware passage post-processing LSTM.
+    # Question-aware passage post-processing GRU.
     if self.num_postprocessing_layers > 0:
-      self.postprocessing_lstm = nn.LSTM(input_size = self.hidden_size,
-                                         hidden_size = self.hidden_size // 2,
-                                         num_layers = self.num_postprocessing_layers,
-                                         dropout = self.dropout,
-                                         bidirectional = True)
+      self.postprocessing_gru = nn.GRU(input_size = self.hidden_size,
+                                       hidden_size = self.hidden_size // 2,
+                                       num_layers = self.num_postprocessing_layers,
+                                       dropout = self.dropout,
+                                       bidirectional = True)
 
-    # Tie forward and backward post-processing LSTM weights.
+    # Tie forward and backward post-processing GRU weights.
     for weight_type in ["hh", "ih"]:
       for layer_no in range(self.num_postprocessing_layers):
         weight_name = "weight_" + weight_type + "_l" + str(layer_no)
         bias_name = "bias_" + weight_type + "_l" + str(layer_no)
-        setattr(self.postprocessing_lstm, weight_name + "_reverse",
-                getattr(self.postprocessing_lstm, weight_name))
-        setattr(self.postprocessing_lstm, bias_name + "_reverse",
-                getattr(self.postprocessing_lstm, bias_name))
+        setattr(self.postprocessing_gru, weight_name + "_reverse",
+                getattr(self.postprocessing_gru, weight_name))
+        setattr(self.postprocessing_gru, bias_name + "_reverse",
+                getattr(self.postprocessing_gru, bias_name))
 
     # Answer pointer attention transformations.
     # Question attentions for answer sentence pointer network.
@@ -162,10 +162,10 @@ class qNet(nn.Module):
     setattr(self, 'beta_transform',
             nn.Linear(self.attention_size, 1))
 
-    # Answer pointer LSTM.
-    setattr(self, 'answer_pointer_lstm',
-            nn.LSTMCell(input_size = self.hidden_size * 2,
-                        hidden_size = self.hidden_size // 2))
+    # Answer pointer GRU.
+    setattr(self, 'answer_pointer_gru',
+            nn.GRUCell(input_size = self.hidden_size * 2,
+                       hidden_size = self.hidden_size // 2))
 
   def save(self, path, epoch):
     torch.save(self, path + "/epoch_" + str(epoch) + ".pt")
@@ -177,17 +177,6 @@ class qNet(nn.Module):
   def load_from_file(self, path):
     self = torch.load(path)
     return self
-
-  # Calls torch nn utils rnn pack_padded_sequence.
-  # For Question and Passage LSTMs.
-  # Assume that the batch is sorted in descending order.
-  def make_packed_data(self, inp, lengths):
-    return torch.nn.utils.rnn.pack_padded_sequence(inp, lengths)
-
-  # Calls torch nn utils rnn pad_packed_sequence.
-  # Returns (padded_seq, lens)
-  def make_padded_sequence(self, inp):
-    return torch.nn.utils.rnn.pad_packed_sequence(inp)
 
   def variable(self, v):
     if self.use_cuda:
@@ -212,21 +201,30 @@ class qNet(nn.Module):
     return (self.variable(torch.zeros(batch_size, hidden_size)),
             self.variable(torch.zeros(batch_size, hidden_size)))
 
+  # h0 has dims (num_directions * num_layers, batch_size, hidden_size)
+  # If for a cell, it has dims (batch_size, hidden_size)
+  def get_initial_gru(self, batch_size, hidden_size = None, for_cell = True):
+    if hidden_size is None:
+      hidden_size = self.hidden_size
+    if not for_cell:
+      return self.variable(torch.zeros(1, batch_size, hidden_size))
+    return self.variable(torch.zeros(batch_size, hidden_size))
+
   # inp.shape = (seq_len, batch)
   # output.shape = (seq_len, batch, embed_size)
   def get_glove_embeddings(self, inp):
     return self.placeholder(self.embedding[inp])
 
-  # Get final layer hidden states of the provided LSTM run over the given
+  # Get final layer hidden states of the provided GRU run over the given
   # input sequence.
-  def process_input_with_lstm(self, inputs, max_len, input_lens, batch_size,
-                              lstm_to_use):
+  def process_input_with_gru(self, inputs, max_len, input_lens, batch_size,
+                             gru_to_use):
     idxs = np.array(np.argsort(input_lens)[::-1])
     lens = [ input_lens[idx] for idx in idxs ]
     idxs = self.variable(torch.from_numpy(idxs))
     inputs_sorted = torch.index_select(inputs, 1, idxs)
     inputs_sorted = pack_padded_sequence(inputs_sorted, lens)
-    H, _ = lstm_to_use(inputs_sorted)
+    H, _ = gru_to_use(inputs_sorted)
     H, _ = pad_packed_sequence(H)
     unsorted_idxs = self.variable(torch.zeros(idxs.size()[0])).long()
     unsorted_idxs.scatter_(0, idxs,
@@ -237,10 +235,10 @@ class qNet(nn.Module):
   def match_question_passage(self, layer_no, Hpi, Hq, max_passage_len,
                              passage_lens, batch_size, mask, mask_q_byte,
                              mask_p_zero, mask_q_zero):
-    # Initial hidden and cell states for forward and backward LSTMs.
+    # Initial hidden and cell states for forward and backward GRUs.
     # h{f,b}.shape = (batch, hdim / 2)
-    hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
-    hb, cb = self.get_initial_lstm(batch_size, self.hidden_size // 2)
+    hf = self.get_initial_gru(batch_size, self.hidden_size // 2)
+    hb = self.get_initial_gru(batch_size, self.hidden_size // 2)
 
     # Get vectors zi for each i in passage.
     # Attended question is the same at each time step. Just compute it once.
@@ -288,15 +286,13 @@ class qNet(nn.Module):
         zf = torch.cat((Hpi[forward_idx], weighted_Hq_f), dim=-1)
         zb = torch.cat((Hpi[backward_idx], weighted_Hq_b), dim=-1)
 
-        # Take forward and backward LSTM steps, with zf and zb as inputs.
-        hf, cf = getattr(self, 'passage_match_lstm_' + layer_no)(zf, (hf, cf))
-        hb, cb = getattr(self, 'passage_match_lstm_' + layer_no)(zb, (hb, cb))
+        # Take forward and backward GRU steps, with zf and zb as inputs.
+        hf = getattr(self, 'passage_match_gru_' + layer_no)(zf, hf)
+        hb = getattr(self, 'passage_match_gru_' + layer_no)(zb, hb)
 
         # Back to initial zero states for padded regions.
         hf = hf * mask[forward_idx]
-        cf = cf * mask[forward_idx]
         hb = hb * mask[backward_idx]
-        cb = cb * mask[backward_idx]
 
         # Append hidden states to create Hf and Hb matrices.
         # h{f,b}.shape = (batch, hdim / 2)
@@ -316,10 +312,10 @@ class qNet(nn.Module):
   def match_passage_passage(self, layer_no, Hr, max_passage_len, passage_lens,
                             batch_size, mask_p_byte, mask_p, mask_p_zero,
                             mask_q_zero):
-    # Initial hidden and cell states for forward and backward LSTMs.
+    # Initial hidden and cell states for forward and backward GRUs.
     # h{f,b}.shape = (batch, hdim / 2)
-    hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
-    hb, cb = self.get_initial_lstm(batch_size, self.hidden_size // 2)
+    hf = self.get_initial_gru(batch_size, self.hidden_size // 2)
+    hb = self.get_initial_gru(batch_size, self.hidden_size // 2)
 
     # Get vectors zi for each i in passage.
     # Attended passage is the same at each time step. Just compute it once.
@@ -361,15 +357,13 @@ class qNet(nn.Module):
         zf = torch.cat((Hr[forward_idx], weighted_Hr_f), dim=-1)
         zb = torch.cat((Hr[backward_idx], weighted_Hr_b), dim=-1)
 
-        # Take forward and backward LSTM steps, with zf and zb as inputs.
-        hf, cf = getattr(self, 'self_match_lstm_' + layer_no)(zf, (hf, cf))
-        hb, cb = getattr(self, 'self_match_lstm_' + layer_no)(zb, (hb, cb))
+        # Take forward and backward GRU steps, with zf and zb as inputs.
+        hf = getattr(self, 'self_match_gru_' + layer_no)(zf, hf)
+        hb = getattr(self, 'self_match_gru_' + layer_no)(zb, hb)
 
         # Back to initial zero states for padded regions.
         hf = hf * mask_p[forward_idx]
-        cf = cf * mask_p[forward_idx]
         hb = hb * mask_p[backward_idx]
-        cb = cb * mask_p[backward_idx]
 
         # Append hidden states to create Hf and Hb matrices.
         # h{f,b}.shape = (batch, hdim / 2)
@@ -403,13 +397,13 @@ class qNet(nn.Module):
                                           torch.transpose(Hq, 0, 1)), dim=1)
 
     # {h,c}{a,b}.shape = (batch, hdim / 2)
-    ha, ca = self.get_initial_lstm(batch_size, self.hidden_size // 2)
-    hb, cb = self.get_initial_lstm(batch_size, self.hidden_size // 2)
+    ha = self.get_initial_gru(batch_size, self.hidden_size // 2)
+    hb = self.get_initial_gru(batch_size, self.hidden_size // 2)
 
     answer_distributions = []
     answer_distributions_b = []
 
-    # Two three-step LSTMs:
+    # Two three-step GRUs:
     #   1) Point to the start index first, then the end index.
     #   2) Point to the end index first, then the start index.
     # 1st step initializes the hidden states to some answer representations.
@@ -455,9 +449,9 @@ class qNet(nn.Module):
       af = torch.cat((weighted_Hr, weighted_Hq), dim=-1)
       ab = torch.cat((weighted_Hr_b, weighted_Hq), dim=-1)
 
-      # LSTM step.
-      ha, ca = getattr(self, 'answer_pointer_lstm')(af, (ha, ca))
-      hb, cb = getattr(self, 'answer_pointer_lstm')(ab, (hb, cb))
+      # GRU step.
+      ha = getattr(self, 'answer_pointer_gru')(af, ha)
+      hb = getattr(self, 'answer_pointer_gru')(ab, hb)
 
     return answer_distributions, answer_distributions_b
 
@@ -509,7 +503,7 @@ class qNet(nn.Module):
     loss /= batch_size
     return distribution, loss
 
-  # Get matrix for padding hidden states of an LSTM running over the
+  # Get matrix for padding hidden states of a GRU running over the
   # given maximum length, for lengths in the batch.
   def get_mask_matrix(self, batch_size, max_len, lens):
     mask_matrix = []
@@ -562,7 +556,6 @@ class qNet(nn.Module):
       p = self.get_glove_embeddings(passage[0])
       q = self.get_glove_embeddings(question[0])
 
-    # Embedding input dropout.
     # {p,q}.shape = (seq_len, batch, embedding_dim + num_pos_tags + num_ner_tags)
     p = torch.cat((p, self.placeholder(passage_pos_tags),
                    self.placeholder(passage_ner_tags)), dim=-1)
@@ -579,12 +572,12 @@ class qNet(nn.Module):
       print "Data preparation time: %.2fs" % (time.time() - start_prepare)
       start_preprocess = time.time()
 
-    # Preprocessing LSTM outputs for passage and question input.
+    # Preprocessing GRU outputs for passage and question input.
     # H{p,q}.shape = (seq_len, batch, hdim)
-    Hp = self.process_input_with_lstm(p, max_passage_len, passage_lens, batch_size,
-                                      self.preprocessing_lstm)
-    Hq = self.process_input_with_lstm(q, max_question_len, question_lens, batch_size,
-                                      self.preprocessing_lstm)
+    Hp = self.process_input_with_gru(p, max_passage_len, passage_lens, batch_size,
+                                     self.preprocessing_gru)
+    Hq = self.process_input_with_gru(q, max_question_len, question_lens, batch_size,
+                                     self.preprocessing_gru)
 
     if self.debug:
       Hp.sum()
@@ -592,14 +585,14 @@ class qNet(nn.Module):
       print "Data pre-processing time: %.2fs" % (time.time() - start_preprocess)
       start_matching = time.time()
 
-    # Bi-directional multi-layer MatchLSTM for question-aware passage representation.
+    # Bi-directional multi-layer MatchGRU for question-aware passage representation.
     Hr = Hp
-    for layer_no in range(self.num_matchlstm_layers):
+    for layer_no in range(self.num_matchgru_layers):
       Hr = self.match_question_passage(str(layer_no), Hr, Hq, max_passage_len,
                                        passage_lens, batch_size, mask_p, mask_q_byte,
                                        mask_p_zero, mask_q_zero)
       # Question-aware passage representation dropout.
-      Hr = getattr(self, 'dropout_passage_matchlstm_' + str(layer_no))(Hr)
+      Hr = getattr(self, 'dropout_passage_matchgru_' + str(layer_no))(Hr)
 
     if self.debug:
       Hr.sum()
@@ -613,7 +606,7 @@ class qNet(nn.Module):
                                       passage_lens, batch_size, mask_p_byte, mask_p,
                                       mask_p_zero, mask_q_zero)
       # Passage self-matching layer dropout.
-      Hr = getattr(self, 'dropout_self_matchlstm_' + str(layer_no))(Hr)
+      Hr = getattr(self, 'dropout_self_matchgru_' + str(layer_no))(Hr)
 
     if self.debug and self.num_selfmatch_layers > 0:
       Hr.sum()
@@ -621,8 +614,8 @@ class qNet(nn.Module):
       start_postprocess = time.time()
 
     if self.num_postprocessing_layers > 0:
-      Hr = self.process_input_with_lstm(Hr, max_passage_len, passage_lens, batch_size,
-                                        self.postprocessing_lstm)
+      Hr = self.process_input_with_gru(Hr, max_passage_len, passage_lens, batch_size,
+                                       self.postprocessing_gru)
 
     if self.debug:
       Hr.sum()

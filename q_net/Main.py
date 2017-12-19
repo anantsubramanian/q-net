@@ -79,7 +79,7 @@ def init_parser():
                       help = "If true, GloVe vectors are not read, and train and dev data sizes are \
                               reduced to 3200 each. Useful for debugging passes of every part of the \
                               code.")
-  parser.add_argument('--dropout', type=float, default=0.5,
+  parser.add_argument('--dropout', type=float, default=0.4,
                       help = "Dropout drop probability between layers and modules of the network.")
   parser.add_argument('--cuda', action='store_true',
                       help = "Whether the model must be trained of an NVIDIA GPU device.")
@@ -90,8 +90,8 @@ def init_parser():
                       help = "Number of passage and question pre-processing layers.")
   parser.add_argument('--num_postprocessing_layers', type=int, default=2,
                       help = "Number of post-processing layers, before the answer pointer network.")
-  parser.add_argument('--num_matchlstm_layers', type=int, default=1,
-                      help = "Number of MatchLSTM layers to use.")
+  parser.add_argument('--num_matchgru_layers', type=int, default=1,
+                      help = "Number of MatchGRU layers to use.")
   parser.add_argument('--num_selfmatch_layers', type=int, default=0,
                       help = "Number of passage self-matching layers to use.")
   parser.add_argument('--f1_loss_multiplier', type=float, default=1.0,
@@ -188,7 +188,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags,
              'f1_loss_threshold' : args.f1_loss_threshold,
              'num_preprocessing_layers': args.num_preprocessing_layers,
              'num_postprocessing_layers': args.num_postprocessing_layers,
-             'num_matchlstm_layers': args.num_matchlstm_layers,
+             'num_matchgru_layers': args.num_matchgru_layers,
              'num_selfmatch_layers': args.num_selfmatch_layers }
   print "Building model."
   model = qNet(config, args.debug)
