@@ -50,10 +50,14 @@ def init_parser():
   parser.add_argument('--attention_size', type=int, default=150,
                       help = "Number of dimensions of the intermediate spaces to which vectors are cast \
                               before they are used to compute attention values.")
-  parser.add_argument('--learning_rate', type=float, default=0.01,
-                      help = "Learning rate used by the optimizer.")
-  parser.add_argument('--decay_rate', type=float, default=0.80,
-                      help = "The learning rate is multiplied by this value after every epoch.")
+  parser.add_argument('--learning_rate_start', type=float, default=0.01,
+                      help = "Starting learning rate used by the optimizer.")
+  parser.add_argument('--learning_rate_end', type=float, default=0.0001,
+                      help = "Ending learning rate used by the optimizer. If learning rate drops \
+                              below this AND validation loss hasn't decreased, training stops.")
+  parser.add_argument('--decay_rate', type=float, default=0.50,
+                      help = "The learning rate is multiplied by this value whenever validation loss \
+                              doesn't decrease, until the minimum learning rate.")
   parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt',
                       help = "Path to the GloVe vectors to use for the embedding layer.")
   parser.add_argument('--disable_glove', action='store_true',
@@ -173,7 +177,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags,
              'hidden_size' : args.hidden_size,
              'attention_size' : args.attention_size,
              'decay_rate' : args.decay_rate,
-             'lr' : args.learning_rate,
+             'lr' : args.learning_rate_start,
              'dropout' : args.dropout,
              'glove_path' : args.glove_path,
              'use_glove' : not args.disable_glove,
@@ -365,10 +369,10 @@ def train_model(args):
 
   if args.optimizer == "SGD":
     print "Using SGD optimizer."
-    optimizer = SGD(model.parameters(), lr = args.learning_rate)
+    optimizer = SGD(model.parameters(), lr = args.learning_rate_start)
   elif args.optimizer == "Adamax":
     print "Using Adamax optimizer."
-    optimizer = Adamax(model.parameters(), lr = args.learning_rate)
+    optimizer = Adamax(model.parameters(), lr = args.learning_rate_start)
     if last_done_epoch > 0:
       if os.path.exists(args.model_dir + "/optim_%d.pt" % last_done_epoch):
         optimizer.load_state_dict(
@@ -379,7 +383,9 @@ def train_model(args):
     assert False, "Unrecognized optimizer."
   print(model)
 
-  print "Starting training."
+  print "Starting training loop."
+  cur_learning_rate = args.learning_rate_start
+  dev_loss_prev = float('inf')
   for EPOCH in range(last_done_epoch+1, args.epochs):
     start_t = time.time()
     train_loss_sum = 0.0
@@ -408,6 +414,8 @@ def train_model(args):
       print "Loss Total: %.5f, Cur: %.5f (in time %.2fs)" % \
             (train_loss_sum/(i+1), model.loss.data[0], time.time() - start_t),
       sys.stdout.flush()
+      if args.debug:
+        print ""
       del model.loss
 
     print "\nLoss: %.5f (in time %.2fs)" % \
@@ -418,9 +426,7 @@ def train_model(args):
     model.zero_grad()
     model.save(args.model_dir, EPOCH)
 
-    # Updating LR for optimizer
-    for param in optimizer.param_groups:
-      param['lr'] *= config['decay_rate']
+    # Save the current optimizer state.
     if args.optimizer == "Adamax":
       torch.save(optimizer.state_dict(), args.model_dir + "/optim_%d.pt" % EPOCH)
 
@@ -465,6 +471,21 @@ def train_model(args):
       all_predictions,
       open(args.model_dir + "/dev_predictions_" + str(EPOCH) + ".json", "w"))
     print "Done."
+
+    # Updating LR for optimizer, if validation loss hasn't decreased.
+    if dev_loss_sum/len(dev_order) >= dev_loss_prev:
+      dev_loss_prev = dev_loss_sum/len(dev_order)
+      print "Dev loss hasn't decreased. Decreasing learning rate %.5f -> %.5f." %\
+            (cur_learning_rate, cur_learning_rate * config['decay_rate'])
+      cur_learning_rate *= config['decay_rate']
+      # Stop training if learning rate is already at minimum, and val loss hasn't
+      # decreased.
+      if cur_learning_rate < args.learning_rate_end:
+        break
+      for param in optimizer.param_groups:
+        param['lr'] *= config['decay_rate']
+
+  print "Training complete!"
 #------------------------------------------------------------------------------#
 
 
