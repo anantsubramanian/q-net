@@ -70,6 +70,10 @@ class qNet(nn.Module):
       self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
                                     self.word_to_index['<pad>'])
 
+    # Input dropouts before pre-processing.
+    self.dropout_p = nn.Dropout(self.dropout)
+    self.dropout_q = nn.Dropout(self.dropout)
+
     # Passage and Question pre-processing LSTMs (matrices Hp and Hq respectively).
     self.preprocessing_lstm = \
       nn.LSTM(input_size = self.embed_size + self.num_pos_tags + self.num_ner_tags,
@@ -150,7 +154,7 @@ class qNet(nn.Module):
 
     # Attend to the input.
     setattr(self, 'attend_input',
-            nn.Linear(self.hidden_size, self.attention_size))
+            nn.Linear(self.hidden_size, self.attention_size, bias = False))
     # Attend to answer hidden state.
     setattr(self, 'attend_answer',
             nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
@@ -231,7 +235,8 @@ class qNet(nn.Module):
 
   # Get a question-aware passage representation.
   def match_question_passage(self, layer_no, Hpi, Hq, max_passage_len,
-                             passage_lens, batch_size, mask, mask_q_byte):
+                             passage_lens, batch_size, mask, mask_q_byte,
+                             mask_p_zero, mask_q_zero):
     # Initial hidden and cell states for forward and backward LSTMs.
     # h{f,b}.shape = (batch, hdim / 2)
     hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
@@ -268,8 +273,8 @@ class qNet(nn.Module):
         alpha_b.masked_fill_(mask_q_byte, -float('inf'))
 
         # alpha_{f,g}.shape = (seq_len, batch, 1)
-        alpha_f = f.softmax(alpha_f, dim=0)
-        alpha_b = f.softmax(alpha_b, dim=0)
+        alpha_f = f.softmax(alpha_f, dim=0) * mask_q_zero
+        alpha_b = f.softmax(alpha_b, dim=0) * mask_q_zero
 
         # Hp[{forward,backward}_idx].shape = (batch, hdim)
         # Hq = (seq_len, batch, hdim)
@@ -309,7 +314,8 @@ class qNet(nn.Module):
 
   # Get a self-aware (question-aware) passage representation.
   def match_passage_passage(self, layer_no, Hr, max_passage_len, passage_lens,
-                            batch_size, mask_p_byte, mask_p):
+                            batch_size, mask_p_byte, mask_p, mask_p_zero,
+                            mask_q_zero):
     # Initial hidden and cell states for forward and backward LSTMs.
     # h{f,b}.shape = (batch, hdim / 2)
     hf, cf = self.get_initial_lstm(batch_size, self.hidden_size // 2)
@@ -341,8 +347,8 @@ class qNet(nn.Module):
         alpha_b.masked_fill_(mask_p_byte, -float('inf'))
 
         # alpha_{f,g}.shape = (seq_len, batch, 1)
-        alpha_f = f.softmax(alpha_f, dim=0)
-        alpha_b = f.softmax(alpha_b, dim=0)
+        alpha_f = f.softmax(alpha_f, dim=0) * mask_p_zero
+        alpha_b = f.softmax(alpha_b, dim=0) * mask_p_zero
 
         # Hr[{forward,backward}_idx].shape = (batch, hdim)
         # weighted_Hr_{f,b}.shape = (batch, hdim)
@@ -384,7 +390,7 @@ class qNet(nn.Module):
   # distributions.
   def answer_pointer(self, Hr, Hp, Hq, max_question_len, question_lens,
                      max_passage_len, passage_lens, batch_size, mask_p_byte,
-                     mask_q_byte):
+                     mask_q_byte, mask_p_zero, mask_q_zero):
     # attended_input[_b].shape = (seq_len, batch, hdim)
     attended_input = getattr(self, 'attend_input')(Hr)
 
@@ -392,7 +398,7 @@ class qNet(nn.Module):
     attended_question = f.tanh(getattr(self, 'attend_question')(Hq))
     alpha_q = getattr(self, 'alpha_transform')(attended_question)
     alpha_q.masked_fill_(mask_q_byte, -float('inf'))
-    alpha_q = f.softmax(alpha_q, dim=0)
+    alpha_q = f.softmax(alpha_q, dim=0) * mask_q_zero
     weighted_Hq = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
                                           torch.transpose(Hq, 0, 1)), dim=1)
 
@@ -426,8 +432,8 @@ class qNet(nn.Module):
       beta_k.masked_fill_(mask_p_byte, -float('inf'))
       beta_k_b.masked_fill_(mask_p_byte, -float('inf'))
 
-      beta_k = f.softmax(beta_k, dim=0)
-      beta_k_b = f.softmax(beta_k_b, dim=0)
+      beta_k = f.softmax(beta_k, dim=0) * mask_p_zero
+      beta_k_b = f.softmax(beta_k_b, dim=0) * mask_p_zero
 
       # Store distributions produced at start and end prediction steps.
       if k > 0:
@@ -460,12 +466,13 @@ class qNet(nn.Module):
   # for training.
   def point_at_answer(self, Hr, Hp, Hq, max_question_len, question_lens,
                       max_passage_len, passage_lens, batch_size,
-                      answer, f1_matrices, mask_p_byte, mask_q_byte):
+                      answer, f1_matrices, mask_p_byte, mask_q_byte,
+                      mask_p_zero, mask_q_zero):
     # Predict the answer start and end indices.
     distribution = self.answer_pointer(Hr, Hp, Hq, max_question_len,
                                        question_lens, max_passage_len,
                                        passage_lens, batch_size, mask_p_byte,
-                                       mask_q_byte)
+                                       mask_q_byte, mask_p_zero, mask_q_zero)
 
     batch_losses = [ [] for _ in range(batch_size) ]
     # For each example in the batch, add the negative log of answer start
@@ -508,7 +515,7 @@ class qNet(nn.Module):
     mask_matrix = []
     for t in range(max_len):
       mask = np.array([ [1.0] if t < lens[i] else [0.0] \
-                            for i in range(batch_size) ])
+                          for i in range(batch_size) ])
       mask = self.placeholder(mask)
       mask_matrix.append(mask)
     return mask_matrix
@@ -544,6 +551,8 @@ class qNet(nn.Module):
     # mask_q.shape = (seq_len, batch, 1)
     mask_p_byte = (1-torch.stack(mask_p, dim=0)).byte()
     mask_q_byte = (1-torch.stack(mask_q, dim=0)).byte()
+    mask_p_zero = torch.stack(mask_p, dim=0).float()
+    mask_q_zero = torch.stack(mask_q, dim=0).float()
 
     # Get embedded passage and question representations.
     if not self.use_glove:
@@ -559,6 +568,10 @@ class qNet(nn.Module):
                    self.placeholder(passage_ner_tags)), dim=-1)
     q = torch.cat((q, self.placeholder(question_pos_tags),
                    self.placeholder(question_ner_tags)), dim=-1)
+
+    # Apply input dropouts.
+    p = self.dropout_p(p)
+    q = self.dropout_q(q)
 
     if self.debug:
       p.sum()
@@ -583,7 +596,8 @@ class qNet(nn.Module):
     Hr = Hp
     for layer_no in range(self.num_matchlstm_layers):
       Hr = self.match_question_passage(str(layer_no), Hr, Hq, max_passage_len,
-                                       passage_lens, batch_size, mask_p, mask_q_byte)
+                                       passage_lens, batch_size, mask_p, mask_q_byte,
+                                       mask_p_zero, mask_q_zero)
       # Question-aware passage representation dropout.
       Hr = getattr(self, 'dropout_passage_matchlstm_' + str(layer_no))(Hr)
 
@@ -596,7 +610,8 @@ class qNet(nn.Module):
     # (Question-aware) passage self-matching layers.
     for layer_no in range(self.num_selfmatch_layers):
       Hr = self.match_passage_passage(str(layer_no), Hr, max_passage_len,
-                                      passage_lens, batch_size, mask_p_byte, mask_p)
+                                      passage_lens, batch_size, mask_p_byte, mask_p,
+                                      mask_p_zero, mask_q_zero)
       # Passage self-matching layer dropout.
       Hr = getattr(self, 'dropout_self_matchlstm_' + str(layer_no))(Hr)
 
@@ -621,7 +636,8 @@ class qNet(nn.Module):
     answer_distributions_list, loss = \
       self.point_at_answer(Hr, Hp, Hq, max_question_len, question_lens,
                            max_passage_len, passage_lens, batch_size,
-                           answer, f1_matrices, mask_p_byte, mask_q_byte)
+                           answer, f1_matrices, mask_p_byte, mask_q_byte,
+                           mask_p_zero, mask_q_zero)
 
     if self.debug:
       loss.data[0]
