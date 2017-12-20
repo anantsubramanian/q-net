@@ -82,6 +82,10 @@ class qNet(nn.Module):
              dropout = self.dropout,
              bidirectional = True)
 
+    # Dropouts for pre-processing outputs.
+    self.dropout_prepro_p = nn.Dropout(self.dropout)
+    self.dropout_prepro_q = nn.Dropout(self.dropout)
+
     # Tie forward and backward pre-processing GRU weights.
     for weight_type in ["hh", "ih"]:
       for layer_no in range(self.num_preprocessing_layers):
@@ -134,6 +138,7 @@ class qNet(nn.Module):
                                        num_layers = self.num_postprocessing_layers,
                                        dropout = self.dropout,
                                        bidirectional = True)
+      self.dropout_postpro = nn.Dropout(self.dropout)
 
     # Tie forward and backward post-processing GRU weights.
     for weight_type in ["hh", "ih"]:
@@ -154,10 +159,12 @@ class qNet(nn.Module):
 
     # Attend to the input.
     setattr(self, 'attend_input',
-            nn.Linear(self.hidden_size, self.attention_size, bias = False))
+            nn.Linear(self.hidden_size, self.attention_size,
+                      bias = False))
     # Attend to answer hidden state.
     setattr(self, 'attend_answer',
-            nn.Linear(self.hidden_size // 2, self.attention_size, bias = False))
+            nn.Linear(self.hidden_size // 2, self.attention_size,
+                      bias = False))
 
     setattr(self, 'beta_transform',
             nn.Linear(self.attention_size, 1))
@@ -193,27 +200,57 @@ class qNet(nn.Module):
   # h0, c0 have dims (num_directions * num_layers, batch_size, hidden_size)
   # If for a cell, they have dims (batch_size, hidden_size)
   def get_initial_lstm(self, batch_size, hidden_size = None, for_cell = True):
+    tensor = torch.cuda.FloatTensor if self.use_cuda else torch.FloatTensor
     if hidden_size is None:
       hidden_size = self.hidden_size
     if not for_cell:
-      return (self.variable(torch.zeros(1, batch_size, hidden_size)),
-              self.variable(torch.zeros(1, batch_size, hidden_size)))
-    return (self.variable(torch.zeros(batch_size, hidden_size)),
-            self.variable(torch.zeros(batch_size, hidden_size)))
+      return (Variable(tensor(1, batch_size, hidden_size).zero_()),
+              Variable(tensor(1, batch_size, hidden_size).zero_()))
+    return (Variable(tensor(batch_size, hidden_size).zero_()),
+            Variable(tensor(batch_size, hidden_size).zero_()))
 
   # h0 has dims (num_directions * num_layers, batch_size, hidden_size)
   # If for a cell, it has dims (batch_size, hidden_size)
   def get_initial_gru(self, batch_size, hidden_size = None, for_cell = True):
+    tensor = torch.cuda.FloatTensor if self.use_cuda else torch.FloatTensor
     if hidden_size is None:
       hidden_size = self.hidden_size
     if not for_cell:
-      return self.variable(torch.zeros(1, batch_size, hidden_size))
-    return self.variable(torch.zeros(batch_size, hidden_size))
+      return Variable(tensor(1, batch_size, hidden_size).zero_())
+    return Variable(tensor(batch_size, hidden_size).zero_())
 
   # inp.shape = (seq_len, batch)
   # output.shape = (seq_len, batch, embed_size)
   def get_glove_embeddings(self, inp):
     return self.placeholder(self.embedding[inp])
+
+  # Detach input of (seq_len, batch, ...) for the given indices,
+  # and fill it with the specified value.
+  def detach3d(self, vals, mask_idxs, fill_val):
+    if len(mask_idxs[0]) == 0:
+      return vals
+    vals = vals.clone()
+    vals[mask_idxs[0], mask_idxs[1], :] = \
+      vals[mask_idxs[0], mask_idxs[1], :].detach().fill_(fill_val)
+    return vals
+
+  # Detach input of (batch, ...) for the given input, for the given
+  # indices, and fill it with the specified value.
+  def detach2d(self, vals, mask_t, fill_val):
+    if len(mask_t) == 0:
+      return vals
+    vals = vals.clone()
+    vals[mask_t, :] = vals[mask_t, :].detach().fill_(fill_val)
+    return vals
+
+  # Softmax over unmasked idxs for each item in the batch, and pad the rest
+  # with zeros. Softmax is done along dimension 0.
+  # Returned tensor shape = (seq_len, batch, 1)
+  def padded_softmax(self, vals, mask_idxs):
+    vals = self.detach3d(vals, mask_idxs, -float('inf'))
+    softmaxed = f.softmax(vals, dim=0)
+    softmaxed = self.detach3d(softmaxed, mask_idxs, 0.0)
+    return softmaxed
 
   # Get final layer hidden states of the provided GRU run over the given
   # input sequence.
@@ -233,8 +270,8 @@ class qNet(nn.Module):
 
   # Get a question-aware passage representation.
   def match_question_passage(self, layer_no, Hpi, Hq, max_passage_len,
-                             passage_lens, batch_size, mask, mask_q_byte,
-                             mask_p_zero, mask_q_zero):
+                             batch_size, mask_p_idxs, mask_p_ts, mask_q_idxs,
+                             mask_q_ts):
     # Initial hidden and cell states for forward and backward GRUs.
     # h{f,b}.shape = (batch, hdim / 2)
     hf = self.get_initial_gru(batch_size, self.hidden_size // 2)
@@ -242,62 +279,59 @@ class qNet(nn.Module):
 
     # Get vectors zi for each i in passage.
     # Attended question is the same at each time step. Just compute it once.
-    # attended_question.shape = (seq_len, batch, hdim)
+    # attended_{question,passage}.shape = (seq_len, batch, hdim)
     attended_question = getattr(self, 'attend_question_for_passage_' + layer_no)(Hq)
     attended_passage = getattr(self, 'attend_passage_for_passage_' + layer_no)(Hpi)
+    attended_question = self.detach3d(attended_question, mask_q_idxs, 0.0)
+    attended_passage = self.detach3d(attended_passage, mask_p_idxs, 0.0)
     attention_q_plus_p = []
     for t in range(max_passage_len):
-      attention_q_plus_p.append(attended_question + \
-                                (attended_passage[t] * mask[t]))
+      attention_q_plus_p.append(attended_question + attended_passage[t])
     transposed_Hq = torch.transpose(Hq, 0, 1)
     Hf, Hb = [], []
     for i in range(max_passage_len):
-        forward_idx = i
-        backward_idx = max_passage_len-i-1
-        # g{f,b}.shape = (seq_len, batch, hdim)
-        gf = f.tanh(attention_q_plus_p[forward_idx] + \
-                 getattr(self, 'attend_passage_hidden_' + layer_no)(hf))
-        gb = f.tanh(attention_q_plus_p[backward_idx] + \
-                 getattr(self, 'attend_passage_hidden_' + layer_no)(hb))
+      forward_idx = i
+      backward_idx = max_passage_len-i-1
+      # g{f,b}.shape = (seq_len, batch, hdim)
+      gf = f.tanh(attention_q_plus_p[forward_idx] + \
+               getattr(self, 'attend_passage_hidden_' + layer_no)(hf))
+      gb = f.tanh(attention_q_plus_p[backward_idx] + \
+               getattr(self, 'attend_passage_hidden_' + layer_no)(hb))
+      gf = self.detach3d(gf, mask_q_idxs, 0.0)
+      gb = self.detach3d(gb, mask_q_idxs, 0.0)
 
-        # alpha_{f,g}.shape = (seq_len, batch, 1)
-        alpha_f = getattr(self, 'passage_alpha_transform_' + layer_no)(gf)
-        alpha_b = getattr(self, 'passage_alpha_transform_' + layer_no)(gb)
+      # alpha_{f,g}.shape = (seq_len, batch, 1)
+      alpha_f = getattr(self, 'passage_alpha_transform_' + layer_no)(gf)
+      alpha_b = getattr(self, 'passage_alpha_transform_' + layer_no)(gb)
 
-        # Mask out padded regions of question attention in the batch.
-        # -inf ensures that the post-softmax output for those parts of the
-        # output is zero.
-        alpha_f.masked_fill_(mask_q_byte, -float('inf'))
-        alpha_b.masked_fill_(mask_q_byte, -float('inf'))
+      # Mask out padded regions of question attention in the batch.
+      alpha_f = self.padded_softmax(alpha_f, mask_q_idxs)
+      alpha_b = self.padded_softmax(alpha_b, mask_q_idxs)
 
-        # alpha_{f,g}.shape = (seq_len, batch, 1)
-        alpha_f = f.softmax(alpha_f, dim=0) * mask_q_zero
-        alpha_b = f.softmax(alpha_b, dim=0) * mask_q_zero
+      # Hp[{forward,backward}_idx].shape = (batch, hdim)
+      # Hq = (seq_len, batch, hdim)
+      # weighted_Hq_f.shape = (batch, hdim)
+      weighted_Hq_f = torch.squeeze(torch.bmm(alpha_f.permute(1, 2, 0),
+                                    transposed_Hq), dim=1)
+      weighted_Hq_b = torch.squeeze(torch.bmm(alpha_b.permute(1, 2, 0),
+                                    transposed_Hq), dim=1)
 
-        # Hp[{forward,backward}_idx].shape = (batch, hdim)
-        # Hq = (seq_len, batch, hdim)
-        # weighted_Hq_f.shape = (batch, hdim)
-        weighted_Hq_f = torch.squeeze(torch.bmm(alpha_f.permute(1, 2, 0),
-                                      transposed_Hq), dim=1)
-        weighted_Hq_b = torch.squeeze(torch.bmm(alpha_b.permute(1, 2, 0),
-                                      transposed_Hq), dim=1)
+      # z{f,b}.shape = (batch, 2 * hdim)
+      zf = torch.cat((Hpi[forward_idx], weighted_Hq_f), dim=-1)
+      zb = torch.cat((Hpi[backward_idx], weighted_Hq_b), dim=-1)
 
-        # z{f,b}.shape = (batch, 2 * hdim)
-        zf = torch.cat((Hpi[forward_idx], weighted_Hq_f), dim=-1)
-        zb = torch.cat((Hpi[backward_idx], weighted_Hq_b), dim=-1)
+      # Take forward and backward GRU steps, with zf and zb as inputs.
+      hf = getattr(self, 'passage_match_gru_' + layer_no)(zf, hf)
+      hb = getattr(self, 'passage_match_gru_' + layer_no)(zb, hb)
 
-        # Take forward and backward GRU steps, with zf and zb as inputs.
-        hf = getattr(self, 'passage_match_gru_' + layer_no)(zf, hf)
-        hb = getattr(self, 'passage_match_gru_' + layer_no)(zb, hb)
+      # Back to initial zero states for padded regions.
+      hf = self.detach2d(hf, mask_p_ts[forward_idx], 0.0)
+      hb = self.detach2d(hb, mask_p_ts[backward_idx], 0.0)
 
-        # Back to initial zero states for padded regions.
-        hf = hf * mask[forward_idx]
-        hb = hb * mask[backward_idx]
-
-        # Append hidden states to create Hf and Hb matrices.
-        # h{f,b}.shape = (batch, hdim / 2)
-        Hf.append(hf)
-        Hb.append(hb)
+      # Append hidden states to create Hf and Hb matrices.
+      # h{f,b}.shape = (batch, hdim / 2)
+      Hf.append(hf)
+      Hb.append(hb)
 
     # H{f,b}.shape = (seq_len, batch, hdim / 2)
     Hb = Hb[::-1]
@@ -309,9 +343,8 @@ class qNet(nn.Module):
     return Hr
 
   # Get a self-aware (question-aware) passage representation.
-  def match_passage_passage(self, layer_no, Hr, max_passage_len, passage_lens,
-                            batch_size, mask_p_byte, mask_p, mask_p_zero,
-                            mask_q_zero):
+  def match_passage_passage(self, layer_no, Hr, max_passage_len, batch_size,
+                            mask_p_idxs, mask_p_ts):
     # Initial hidden and cell states for forward and backward GRUs.
     # h{f,b}.shape = (batch, hdim / 2)
     hf = self.get_initial_gru(batch_size, self.hidden_size // 2)
@@ -321,54 +354,51 @@ class qNet(nn.Module):
     # Attended passage is the same at each time step. Just compute it once.
     # attended_passage.shape = (seq_len, batch, hdim)
     attended_passage = getattr(self, 'attend_self_passage_' + layer_no)(Hr)
+    attended_passage = self.detach3d(attended_passage, mask_p_idxs, 0.0)
     transposed_Hr = torch.transpose(Hr, 0, 1)
     Hf, Hb = [], []
     for i in range(max_passage_len):
-        forward_idx = i
-        backward_idx = max_passage_len-i-1
-        # g{f,b}.shape = (seq_len, batch, hdim)
-        gf = f.tanh(attended_passage + \
-                 getattr(self, 'attend_self_hidden_' + layer_no)(hf))
-        gb = f.tanh(attended_passage + \
-                 getattr(self, 'attend_self_hidden_' + layer_no)(hb))
+      forward_idx = i
+      backward_idx = max_passage_len-i-1
+      # g{f,b}.shape = (seq_len, batch, hdim)
+      gf = f.tanh(attended_passage + \
+               getattr(self, 'attend_self_hidden_' + layer_no)(hf))
+      gb = f.tanh(attended_passage + \
+               getattr(self, 'attend_self_hidden_' + layer_no)(hb))
+      gf = self.detach3d(gf, mask_p_idxs, 0.0)
+      gb = self.detach3d(gb, mask_p_idxs, 0.0)
 
-        # alpha_{f,g}.shape = (seq_len, batch, 1)
-        alpha_f = getattr(self, 'self_alpha_transform_' + layer_no)(gf)
-        alpha_b = getattr(self, 'self_alpha_transform_' + layer_no)(gb)
+      # alpha_{f,g}.shape = (seq_len, batch, 1)
+      alpha_f = getattr(self, 'self_alpha_transform_' + layer_no)(gf)
+      alpha_b = getattr(self, 'self_alpha_transform_' + layer_no)(gb)
 
-        # Mask out padded regions of passage attention in the batch.
-        # -inf ensures that the post-softmax output for those parts of the
-        # output is zero.
-        alpha_f.masked_fill_(mask_p_byte, -float('inf'))
-        alpha_b.masked_fill_(mask_p_byte, -float('inf'))
+      # Mask out padded regions of passage attention in the batch.
+      alpha_f = self.padded_softmax(alpha_f, mask_p_idxs)
+      alpha_b = self.padded_softmax(alpha_b, mask_p_idxs)
 
-        # alpha_{f,g}.shape = (seq_len, batch, 1)
-        alpha_f = f.softmax(alpha_f, dim=0) * mask_p_zero
-        alpha_b = f.softmax(alpha_b, dim=0) * mask_p_zero
+      # Hr[{forward,backward}_idx].shape = (batch, hdim)
+      # weighted_Hr_{f,b}.shape = (batch, hdim)
+      weighted_Hr_f = torch.squeeze(torch.bmm(alpha_f.permute(1, 2, 0),
+                                    transposed_Hr), dim=1)
+      weighted_Hr_b = torch.squeeze(torch.bmm(alpha_b.permute(1, 2, 0),
+                                    transposed_Hr), dim=1)
 
-        # Hr[{forward,backward}_idx].shape = (batch, hdim)
-        # weighted_Hr_{f,b}.shape = (batch, hdim)
-        weighted_Hr_f = torch.squeeze(torch.bmm(alpha_f.permute(1, 2, 0),
-                                      transposed_Hr), dim=1)
-        weighted_Hr_b = torch.squeeze(torch.bmm(alpha_b.permute(1, 2, 0),
-                                      transposed_Hr), dim=1)
+      # z{f,b}.shape = (batch, 2 * hdim)
+      zf = torch.cat((Hr[forward_idx], weighted_Hr_f), dim=-1)
+      zb = torch.cat((Hr[backward_idx], weighted_Hr_b), dim=-1)
 
-        # z{f,b}.shape = (batch, 2 * hdim)
-        zf = torch.cat((Hr[forward_idx], weighted_Hr_f), dim=-1)
-        zb = torch.cat((Hr[backward_idx], weighted_Hr_b), dim=-1)
+      # Take forward and backward GRU steps, with zf and zb as inputs.
+      hf = getattr(self, 'self_match_gru_' + layer_no)(zf, hf)
+      hb = getattr(self, 'self_match_gru_' + layer_no)(zb, hb)
 
-        # Take forward and backward GRU steps, with zf and zb as inputs.
-        hf = getattr(self, 'self_match_gru_' + layer_no)(zf, hf)
-        hb = getattr(self, 'self_match_gru_' + layer_no)(zb, hb)
+      # Back to initial zero states for padded regions.
+      hf = self.detach2d(hf, mask_p_ts[forward_idx], 0.0)
+      hb = self.detach2d(hb, mask_p_ts[backward_idx], 0.0)
 
-        # Back to initial zero states for padded regions.
-        hf = hf * mask_p[forward_idx]
-        hb = hb * mask_p[backward_idx]
-
-        # Append hidden states to create Hf and Hb matrices.
-        # h{f,b}.shape = (batch, hdim / 2)
-        Hf.append(hf)
-        Hb.append(hb)
+      # Append hidden states to create Hf and Hb matrices.
+      # h{f,b}.shape = (batch, hdim / 2)
+      Hf.append(hf)
+      Hb.append(hb)
 
     # H{f,b}.shape = (seq_len, batch, hdim / 2)
     Hb = Hb[::-1]
@@ -382,17 +412,17 @@ class qNet(nn.Module):
   # Boundary pointer model, that gives probability distributions over the
   # start and end indices. Returns the hidden states, as well as the predicted
   # distributions.
-  def answer_pointer(self, Hr, Hp, Hq, max_question_len, question_lens,
-                     max_passage_len, passage_lens, batch_size, mask_p_byte,
-                     mask_q_byte, mask_p_zero, mask_q_zero):
-    # attended_input[_b].shape = (seq_len, batch, hdim)
+  def answer_pointer(self, Hr, Hp, Hq, mask_p_idxs, mask_p_ts, mask_q_idxs,
+                     mask_q_ts, batch_size):
+    # attended_input.shape = (seq_len, batch, hdim)
     attended_input = getattr(self, 'attend_input')(Hr)
+    attended_input = self.detach3d(attended_input, mask_p_idxs, 0.0)
 
     # weighted_Hq.shape = (batch, hdim)
     attended_question = f.tanh(getattr(self, 'attend_question')(Hq))
+    attended_question = self.detach3d(attended_question, mask_q_idxs, 0.0)
     alpha_q = getattr(self, 'alpha_transform')(attended_question)
-    alpha_q.masked_fill_(mask_q_byte, -float('inf'))
-    alpha_q = f.softmax(alpha_q, dim=0) * mask_q_zero
+    alpha_q = self.padded_softmax(alpha_q, mask_q_idxs)
     weighted_Hq = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
                                           torch.transpose(Hq, 0, 1)), dim=1)
 
@@ -411,10 +441,10 @@ class qNet(nn.Module):
     # 3rd step predicts end/start distributions in 1/2 respectively.
     for k in range(3):
       # Fk[_b].shape = (seq_len, batch, hdim)
-      Fk = f.tanh(attended_input + \
-                  getattr(self, 'attend_answer')(ha))
-      Fk_b = f.tanh(attended_input + \
-                    getattr(self, 'attend_answer')(hb))
+      Fk = f.tanh(attended_input + getattr(self, 'attend_answer')(ha))
+      Fk_b = f.tanh(attended_input + getattr(self, 'attend_answer')(hb))
+      Fk = self.detach3d(Fk, mask_p_idxs, 0.0)
+      Fk_b = self.detach3d(Fk_b, mask_p_idxs, 0.0)
 
       # Get softmaxes over only valid paragraph lengths for each element in
       # the batch.
@@ -423,11 +453,8 @@ class qNet(nn.Module):
       beta_k_b = getattr(self, 'beta_transform')(Fk_b)
 
       # Mask out padded regions.
-      beta_k.masked_fill_(mask_p_byte, -float('inf'))
-      beta_k_b.masked_fill_(mask_p_byte, -float('inf'))
-
-      beta_k = f.softmax(beta_k, dim=0) * mask_p_zero
-      beta_k_b = f.softmax(beta_k_b, dim=0) * mask_p_zero
+      beta_k = self.padded_softmax(beta_k, mask_p_idxs)
+      beta_k_b = self.padded_softmax(beta_k_b, mask_p_idxs)
 
       # Store distributions produced at start and end prediction steps.
       if k > 0:
@@ -458,15 +485,11 @@ class qNet(nn.Module):
   # Boundary pointer model, that gives probability distributions over the
   # answer start and answer end indices. Additionally returns the loss
   # for training.
-  def point_at_answer(self, Hr, Hp, Hq, max_question_len, question_lens,
-                      max_passage_len, passage_lens, batch_size,
-                      answer, f1_matrices, mask_p_byte, mask_q_byte,
-                      mask_p_zero, mask_q_zero):
+  def point_at_answer(self, Hr, Hp, Hq, batch_size, answer, f1_matrices,
+                      mask_p_idxs, mask_p_ts, mask_q_idxs, mask_q_ts):
     # Predict the answer start and end indices.
-    distribution = self.answer_pointer(Hr, Hp, Hq, max_question_len,
-                                       question_lens, max_passage_len,
-                                       passage_lens, batch_size, mask_p_byte,
-                                       mask_q_byte, mask_p_zero, mask_q_zero)
+    distribution = self.answer_pointer(Hr, Hp, Hq, mask_p_idxs, mask_p_ts,
+                                       mask_q_idxs, mask_q_ts, batch_size)
 
     batch_losses = [ [] for _ in range(batch_size) ]
     # For each example in the batch, add the negative log of answer start
@@ -503,16 +526,18 @@ class qNet(nn.Module):
     loss /= batch_size
     return distribution, loss
 
-  # Get matrix for padding hidden states of a GRU running over the
-  # given maximum length, for lengths in the batch.
-  def get_mask_matrix(self, batch_size, max_len, lens):
-    mask_matrix = []
+  # Get idxs to be padded for the given input, for the given maximum length,
+  # for lengths in the batch.
+  def get_mask_idxs(self, batch_size, max_len, lens):
+    mask_idxs = [[], []]
+    mask_ts = [ [] for _ in range(max_len) ]
     for t in range(max_len):
-      mask = np.array([ [1.0] if t < lens[i] else [0.0] \
-                          for i in range(batch_size) ])
-      mask = self.placeholder(mask)
-      mask_matrix.append(mask)
-    return mask_matrix
+      for idx in range(batch_size):
+        if t >= lens[idx]:
+          mask_idxs[0].append(t)
+          mask_idxs[1].append(idx)
+          mask_ts[t].append(idx)
+    return mask_idxs, mask_ts
 
   # Forward pass method.
   # passage = tuple((seq_len, batch), len_within_batch)
@@ -539,14 +564,11 @@ class qNet(nn.Module):
     if self.debug_level >= 3:
       start_prepare = time.time()
 
-    mask_p = self.get_mask_matrix(batch_size, max_passage_len, passage_lens)
-    mask_q = self.get_mask_matrix(batch_size, max_question_len, question_lens)
-
-    # mask_q.shape = (seq_len, batch, 1)
-    mask_p_byte = (1-torch.stack(mask_p, dim=0)).byte()
-    mask_q_byte = (1-torch.stack(mask_q, dim=0)).byte()
-    mask_p_zero = torch.stack(mask_p, dim=0).float()
-    mask_q_zero = torch.stack(mask_q, dim=0).float()
+    # Indices of values to be masked out.
+    mask_p_idxs, mask_p_ts = \
+      self.get_mask_idxs(batch_size, max_passage_len, passage_lens)
+    mask_q_idxs, mask_q_ts = \
+      self.get_mask_idxs(batch_size, max_question_len, question_lens)
 
     # Get embedded passage and question representations.
     if not self.use_glove:
@@ -579,6 +601,10 @@ class qNet(nn.Module):
     Hq = self.process_input_with_gru(q, max_question_len, question_lens, batch_size,
                                      self.preprocessing_gru)
 
+    # Pre-processing outputs dropout.
+    Hp = self.dropout_prepro_p(Hp)
+    Hq = self.dropout_prepro_q(Hq)
+
     if self.debug_level >= 3:
       Hp.sum()
       Hq.sum()
@@ -589,8 +615,8 @@ class qNet(nn.Module):
     Hr = Hp
     for layer_no in range(self.num_matchgru_layers):
       Hr = self.match_question_passage(str(layer_no), Hr, Hq, max_passage_len,
-                                       passage_lens, batch_size, mask_p, mask_q_byte,
-                                       mask_p_zero, mask_q_zero)
+                                       batch_size, mask_p_idxs, mask_p_ts,
+                                       mask_q_idxs, mask_q_ts)
       # Question-aware passage representation dropout.
       Hr = getattr(self, 'dropout_passage_matchgru_' + str(layer_no))(Hr)
 
@@ -603,8 +629,7 @@ class qNet(nn.Module):
     # (Question-aware) passage self-matching layers.
     for layer_no in range(self.num_selfmatch_layers):
       Hr = self.match_passage_passage(str(layer_no), Hr, max_passage_len,
-                                      passage_lens, batch_size, mask_p_byte, mask_p,
-                                      mask_p_zero, mask_q_zero)
+                                      batch_size, mask_p_idxs, mask_p_ts)
       # Passage self-matching layer dropout.
       Hr = getattr(self, 'dropout_self_matchgru_' + str(layer_no))(Hr)
 
@@ -616,6 +641,7 @@ class qNet(nn.Module):
     if self.num_postprocessing_layers > 0:
       Hr = self.process_input_with_gru(Hr, max_passage_len, passage_lens, batch_size,
                                        self.postprocessing_gru)
+      Hr = self.dropout_postpro(Hr)
 
     if self.debug_level >= 3:
       Hr.sum()
@@ -627,10 +653,8 @@ class qNet(nn.Module):
     # and the loss for training.
     # At this point, Hr.shape = (seq_len, batch, hdim)
     answer_distributions_list, loss = \
-      self.point_at_answer(Hr, Hp, Hq, max_question_len, question_lens,
-                           max_passage_len, passage_lens, batch_size,
-                           answer, f1_matrices, mask_p_byte, mask_q_byte,
-                           mask_p_zero, mask_q_zero)
+      self.point_at_answer(Hr, Hp, Hq, batch_size, answer, f1_matrices,
+                           mask_p_idxs, mask_p_ts, mask_q_idxs, mask_q_ts)
 
     if self.debug_level >= 3:
       loss.data[0]
