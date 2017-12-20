@@ -30,49 +30,49 @@ def init_parser():
   parser.add_argument('--dev_pickle',
                       help = "Path to read/dump dev pickle file to.")
   parser.add_argument('--predictions_output_json',
-                      help = "When using run_type test, output predictions will be written to this \
-                              json")
+                      help = "When using run_type test, output predictions will be written to this "\
+                             "json")
   parser.add_argument('--dump_pickles', action='store_true',
-                      help = "Whether the train/dev pickles must be dumped. Input jsons must be \
-                              provided to create these pickles.")
+                      help = "Whether the train/dev pickles must be dumped. Input jsons must be "\
+                             "provided to create these pickles.")
   parser.add_argument('--max_train_articles', type=int, default=-1,
-                      help = "Maximum number of training articles to use, while reading from the \
-                              train json file.")
+                      help = "Maximum number of training articles to use, while reading from the "\
+                             "train json file.")
   parser.add_argument('--max_dev_articles', type=int, default=-1,
-                      help = "Maximum number of dev articles to use, while reading from the dev \
-                              json file.")
+                      help = "Maximum number of dev articles to use, while reading from the dev "\
+                             "json file.")
   parser.add_argument('--embed_size', type=int, default=300,
-                      help = "Embedding size to use for inputs. This *MUST* match the GloVe dimensions \
-                              when disable_glove is not set.")
+                      help = "Embedding size to use for inputs. This *MUST* match the GloVe dimensions "\
+                             "when disable_glove is not set.")
   parser.add_argument('--hidden_size', type=int, default=300,
-                      help = "Hidden dimension sizes to use throughout the network. For bi-directional \
-                              layers, each direction is half this size.")
+                      help = "Hidden dimension sizes to use throughout the network. For bi-directional "\
+                             "layers, each direction is half this size.")
   parser.add_argument('--attention_size', type=int, default=150,
-                      help = "Number of dimensions of the intermediate spaces to which vectors are cast \
-                              before they are used to compute attention values.")
+                      help = "Number of dimensions of the intermediate spaces to which vectors are cast "\
+                             "before they are used to compute attention values.")
   parser.add_argument('--learning_rate_start', type=float, default=0.01,
                       help = "Starting learning rate used by the optimizer.")
   parser.add_argument('--learning_rate_end', type=float, default=0.0001,
-                      help = "Ending learning rate used by the optimizer. If learning rate drops \
-                              below this AND validation loss hasn't decreased, training stops.")
-  parser.add_argument('--decay_rate', type=float, default=0.50,
-                      help = "The learning rate is multiplied by this value whenever validation loss \
-                              doesn't decrease, until the minimum learning rate.")
+                      help = "Ending learning rate used by the optimizer. If learning rate drops "\
+                             "below this AND validation loss hasn't decreased, training stops.")
+  parser.add_argument('--decay_rate', type=float, default=0.75,
+                      help = "The learning rate is multiplied by this value whenever validation loss "\
+                             "doesn't decrease, until the minimum learning rate.")
   parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt',
                       help = "Path to the GloVe vectors to use for the embedding layer.")
   parser.add_argument('--disable_glove', action='store_true',
-                      help = "When provided, GloVe vectors are not used, and an embedding layer is \
-                              learned in an end-to-end manner.")
+                      help = "When provided, GloVe vectors are not used, and an embedding layer is "\
+                             "learned in an end-to-end manner.")
   parser.add_argument('--ckpt', type=int, default=0,
                       help = "Checkpoint number to resume from. If 0, starts training from scratch.")
   parser.add_argument('--model_file',
-                      help = "A particular model file to load the model from. Especially useful for \
-                              test runs.")
+                      help = "A particular model file to load the model from. Especially useful for "\
+                             "test runs.")
   parser.add_argument('--epochs', type=int, default=50,
                       help = "Number of epochs to train the model for.")
   parser.add_argument('--model_dir', default='./',
-                      help = "Directory to dump the trained models after every epoch, as well as the \
-                              dev predictions json files after every epoch.")
+                      help = "Directory to dump the trained models after every epoch, as well as the "\
+                             "dev predictions json files after every epoch.")
   parser.add_argument('--batch_size', type=int, default=32,
                       help = "Batch size to use during training.")
   parser.add_argument('--test_batch_size', type=int, default=32,
@@ -80,17 +80,17 @@ def init_parser():
   parser.add_argument('--optimizer', default='Adamax',
                       help = "Optimizer to use. One of either 'SGD', 'Adamax' or 'Adadelta'.")
   parser.add_argument('--debug_level', type=int, default=0,
-                      help = "Level 1: train and dev data sizes are reduced to 3200 each. \
-                              Level 2: GloVe vectors are not read. \
-                              Level 3: Timing statements are printed. \
-                              Useful for debugging passes of differents parts of the code.")
+                      help = "Level 1: train and dev data sizes are reduced to 3200 each. "\
+                             "Level 2: GloVe vectors are not read. "\
+                             "Level 3: Timing statements are printed. "\
+                             "Useful for debugging passes of differents parts of the code.")
   parser.add_argument('--dropout', type=float, default=0.4,
                       help = "Dropout drop probability between layers and modules of the network.")
   parser.add_argument('--cuda', action='store_true',
                       help = "Whether the model must be trained of an NVIDIA GPU device.")
   parser.add_argument('--max_answer_span', type=int, default=15,
-                      help = "Maximum length of answers during prediction. Search is performed over spans \
-                              of this length.")
+                      help = "Maximum length of answers during prediction. Search is performed over spans "\
+                             "of this length.")
   parser.add_argument('--num_preprocessing_layers', type=int, default=2,
                       help = "Number of passage and question pre-processing layers.")
   parser.add_argument('--num_postprocessing_layers', type=int, default=2,
@@ -100,8 +100,8 @@ def init_parser():
   parser.add_argument('--num_selfmatch_layers', type=int, default=0,
                       help = "Number of passage self-matching layers to use.")
   parser.add_argument('--f1_loss_multiplier', type=float, default=1.0,
-                      help = "Multiply the Expected F1 loss by this value. Useful as this loss has a \
-                              smaller magnitude than the MLE loss.")
+                      help = "Multiply the Expected F1 loss by this value. Useful as this loss has a "\
+                             "smaller magnitude than the MLE loss.")
   parser.add_argument('--f1_loss_threshold', type=float, default=-1.0,
                       help = "Only penalize F1 values below this threshold. -1 is the distribution loss.")
   parser.add_argument('--model_description',
@@ -475,9 +475,10 @@ def train_model(args):
 
     # Updating LR for optimizer, if validation loss hasn't decreased.
     if dev_loss_sum/len(dev_order) >= dev_loss_prev:
-      dev_loss_prev = dev_loss_sum/len(dev_order)
-      print "Dev loss hasn't decreased. Decreasing learning rate %.5f -> %.5f." %\
-            (cur_learning_rate, cur_learning_rate * config['decay_rate'])
+      print "Dev loss hasn't decreased (prev = %.5f, cur = %.5f).\n"\
+            "Decreasing learning rate %.5f -> %.5f." %\
+            (dev_loss_prev, dev_loss_sum/len(dev_order),
+             cur_learning_rate, cur_learning_rate * config['decay_rate'])
       cur_learning_rate *= config['decay_rate']
       # Stop training if learning rate is already at minimum, and val loss hasn't
       # decreased.
@@ -485,6 +486,8 @@ def train_model(args):
         break
       for param in optimizer.param_groups:
         param['lr'] *= config['decay_rate']
+
+    dev_loss_prev = dev_loss_sum/len(dev_order)
 
   print "Training complete!"
 #------------------------------------------------------------------------------#
