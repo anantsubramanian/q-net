@@ -297,8 +297,6 @@ class qNet(nn.Module):
                getattr(self, 'attend_passage_hidden_' + layer_no)(hf))
       gb = f.tanh(attention_q_plus_p[backward_idx] + \
                getattr(self, 'attend_passage_hidden_' + layer_no)(hb))
-      gf = self.detach3d(gf, mask_q_idxs, 0.0)
-      gb = self.detach3d(gb, mask_q_idxs, 0.0)
 
       # alpha_{f,g}.shape = (seq_len, batch, 1)
       alpha_f = getattr(self, 'passage_alpha_transform_' + layer_no)(gf)
@@ -365,8 +363,6 @@ class qNet(nn.Module):
                getattr(self, 'attend_self_hidden_' + layer_no)(hf))
       gb = f.tanh(attended_passage + \
                getattr(self, 'attend_self_hidden_' + layer_no)(hb))
-      gf = self.detach3d(gf, mask_p_idxs, 0.0)
-      gb = self.detach3d(gb, mask_p_idxs, 0.0)
 
       # alpha_{f,g}.shape = (seq_len, batch, 1)
       alpha_f = getattr(self, 'self_alpha_transform_' + layer_no)(gf)
@@ -420,7 +416,6 @@ class qNet(nn.Module):
 
     # weighted_Hq.shape = (batch, hdim)
     attended_question = f.tanh(getattr(self, 'attend_question')(Hq))
-    attended_question = self.detach3d(attended_question, mask_q_idxs, 0.0)
     alpha_q = getattr(self, 'alpha_transform')(attended_question)
     alpha_q = self.padded_softmax(alpha_q, mask_q_idxs)
     weighted_Hq = torch.squeeze(torch.bmm(alpha_q.permute(1, 2, 0),
@@ -443,8 +438,6 @@ class qNet(nn.Module):
       # Fk[_b].shape = (seq_len, batch, hdim)
       Fk = f.tanh(attended_input + getattr(self, 'attend_answer')(ha))
       Fk_b = f.tanh(attended_input + getattr(self, 'attend_answer')(hb))
-      Fk = self.detach3d(Fk, mask_p_idxs, 0.0)
-      Fk_b = self.detach3d(Fk_b, mask_p_idxs, 0.0)
 
       # Get softmaxes over only valid paragraph lengths for each element in
       # the batch.
