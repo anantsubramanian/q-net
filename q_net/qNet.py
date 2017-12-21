@@ -302,9 +302,9 @@ class qNet(nn.Module):
       alpha_f = getattr(self, 'passage_alpha_transform_' + layer_no)(gf)
       alpha_b = getattr(self, 'passage_alpha_transform_' + layer_no)(gb)
 
-      # Mask out padded regions of question attention in the batch.
-      alpha_f = self.padded_softmax(alpha_f, mask_q_idxs)
-      alpha_b = self.padded_softmax(alpha_b, mask_q_idxs)
+      # Masking unnecessary here, as the values are already zero.
+      alpha_f = f.softmax(alpha_f, dim=0)
+      alpha_b = f.softmax(alpha_b, dim=0)
 
       # Hp[{forward,backward}_idx].shape = (batch, hdim)
       # Hq = (seq_len, batch, hdim)
@@ -368,9 +368,9 @@ class qNet(nn.Module):
       alpha_f = getattr(self, 'self_alpha_transform_' + layer_no)(gf)
       alpha_b = getattr(self, 'self_alpha_transform_' + layer_no)(gb)
 
-      # Mask out padded regions of passage attention in the batch.
-      alpha_f = self.padded_softmax(alpha_f, mask_p_idxs)
-      alpha_b = self.padded_softmax(alpha_b, mask_p_idxs)
+      # Masking unnecessary here, as the values are already zero.
+      alpha_f = f.softmax(alpha_f, dim=0)
+      alpha_b = f.softmax(alpha_b, dim=0)
 
       # Hr[{forward,backward}_idx].shape = (batch, hdim)
       # weighted_Hr_{f,b}.shape = (batch, hdim)
