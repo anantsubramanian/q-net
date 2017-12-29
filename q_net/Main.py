@@ -104,6 +104,9 @@ def init_parser():
                              "smaller magnitude than the MLE loss.")
   parser.add_argument('--f1_loss_threshold', type=float, default=-1.0,
                       help = "Only penalize F1 values below this threshold. -1 is the distribution loss.")
+  parser.add_argument('--show_losses', action='store_true',
+                      help = "If this flag is set, the individual values of the MLE and F1 losses are "\
+                             "displayed during training.")
   parser.add_argument('--model_description',
                       help = "A useful model description to keep track of which model was run.")
   return parser
@@ -412,12 +415,17 @@ def train_model(args):
       optimizer.step()
       train_loss_sum += model.loss.data[0]
 
-      print "Loss Total: %.5f, Cur: %.5f (in time %.2fs)" % \
+      print "Loss Total: %.5f, Cur: %.5f (in time %.2fs) " % \
             (train_loss_sum/(i+1), model.loss.data[0], time.time() - start_t),
+      if args.show_losses:
+        print "[MLE: %.5f, F1: %.5f]" % (model.mle_loss.data[0], model.f1_loss.data[0]),
       sys.stdout.flush()
       if args.debug_level >= 3:
         print ""
       del model.loss
+      del model.mle_loss
+      if args.f1_loss_multiplier > 0:
+        del model.f1_loss
 
     print "\nLoss: %.5f (in time %.2fs)" % \
           (train_loss_sum/len(train_order), time.time() - start_t)
@@ -461,6 +469,9 @@ def train_model(args):
       print "[Average loss : %.5f, Cur: %.5f]" % (dev_loss_sum/(i+1), model.loss.data[0]),
       sys.stdout.flush()
       del model.loss
+      del model.mle_loss
+      if args.f1_loss_multiplier > 0:
+        del model.f1_loss
 
     # Print dev stats for epoch
     print "\nDev Loss: %.4f (in time: %.2f s)" %\
@@ -565,6 +576,9 @@ def test_model(args):
     print "[Average loss : %.5f]" % (test_loss_sum/(i+1)),
     sys.stdout.flush()
     del model.loss
+    del model.mle_loss
+    if args.f1_loss_multiplier > 0:
+      del model.f1_loss
 
   # Print stats
   print "\nTest Loss: %.4f (in time: %.2f s)" %\

@@ -483,10 +483,17 @@ class qNet(nn.Module):
                                  loss_f1_b[idx])
 
     loss = 0.0
+    mle_loss = 0
+    f1_loss = 0
     for idx in range(batch_size):
       loss += -torch.log(sum(batch_losses[idx]) / (1 + self.f1_loss_multiplier))
+      mle_loss += -torch.log(batch_losses[idx][0] / (1 + self.f1_loss_multiplier))
+      if self.f1_loss_multiplier > 0:
+        f1_loss += -torch.log(batch_losses[idx][1] / (1 + self.f1_loss_multiplier))
     loss /= batch_size
-    return distribution, loss
+    mle_loss /= batch_size
+    f1_loss /= batch_size
+    return distribution, loss, mle_loss, f1_loss
 
   # Get idxs to be padded for the given input, for the given maximum length,
   # for lengths in the batch.
@@ -605,7 +612,7 @@ class qNet(nn.Module):
     # Get probability distributions over the answer start, answer end,
     # and the loss for training.
     # At this point, Hr.shape = (seq_len, batch, hdim)
-    answer_distributions_list, loss = \
+    answer_distributions_list, loss, mle_loss, f1_loss = \
       self.point_at_answer(Hr, Hp, Hq, batch_size, answer, f1_matrices,
                            mask_p_idxs, mask_p_ts, mask_q_idxs, mask_q_ts)
 
@@ -614,5 +621,7 @@ class qNet(nn.Module):
       print "Answer pointer time: %.2fs" % (time.time() - start_answer)
 
     self.loss = loss
+    self.mle_loss = mle_loss
+    self.f1_loss = f1_loss
     return answer_distributions_list
 
