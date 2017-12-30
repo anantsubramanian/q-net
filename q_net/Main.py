@@ -52,12 +52,11 @@ def init_parser():
                              "before they are used to compute attention values.")
   parser.add_argument('--learning_rate_start', type=float, default=0.006,
                       help = "Starting learning rate used by the optimizer.")
-  parser.add_argument('--learning_rate_end', type=float, default=0.0001,
-                      help = "Ending learning rate used by the optimizer. If learning rate drops "\
-                             "below this AND validation loss hasn't decreased, training stops.")
-  parser.add_argument('--decay_rate', type=float, default=0.75,
-                      help = "The learning rate is multiplied by this value whenever validation loss "\
-                             "doesn't decrease, until the minimum learning rate.")
+  parser.add_argument('--decay_rate', type=float, default=0.90,
+                      help = "The learning rate is multiplied by this value every epoch "\
+                             "until the minimum learning rate, as long as the validation loss decreases.")
+  parser.add_argument('--loss_increase_epochs', type=int, default=2,
+                      help = "Stop training if dev loss has increased continuously for these many epochs.")
   parser.add_argument('--vectors_path', default='../../data/fasttext/crawl-300d-2M.vec',
                       help = "Path to the pre-trained vectors to use for the embedding layer.")
   parser.add_argument('--disable_pretrained', action='store_true',
@@ -390,6 +389,7 @@ def train_model(args):
   print "Starting training loop."
   cur_learning_rate = args.learning_rate_start
   dev_loss_prev = float('inf')
+  loss_increase_counter = 0
   for EPOCH in range(last_done_epoch+1, args.epochs):
     start_t = time.time()
     train_loss_sum = 0.0
@@ -435,7 +435,10 @@ def train_model(args):
     model.zero_grad()
     model.save(args.model_dir, EPOCH)
 
-    # Save the current optimizer state.
+    # Decrease learning rate, and save the current optimizer state.
+    for param in optimizer.param_groups:
+      param['lr'] *= config['decay_rate']
+    cur_learning_rate *= config['decay_rate']
     if args.optimizer == "Adamax":
       torch.save(optimizer.state_dict(), args.model_dir + "/optim_%d.pt" % EPOCH)
 
@@ -484,19 +487,15 @@ def train_model(args):
       open(args.model_dir + "/dev_predictions_" + str(EPOCH) + ".json", "w"))
     print "Done."
 
-    # Updating LR for optimizer, if validation loss hasn't decreased.
+    # Break if validation loss doesn't decrease for specified num of epochs.
     if dev_loss_sum/len(dev_order) >= dev_loss_prev:
-      print "Dev loss hasn't decreased (prev = %.5f, cur = %.5f).\n"\
-            "Decreasing learning rate %.5f -> %.5f." %\
-            (dev_loss_prev, dev_loss_sum/len(dev_order),
-             cur_learning_rate, cur_learning_rate * config['decay_rate'])
-      cur_learning_rate *= config['decay_rate']
-      # Stop training if learning rate is already at minimum, and val loss hasn't
-      # decreased.
-      if cur_learning_rate < args.learning_rate_end:
+      loss_increase_counter += 1
+      print "Dev loss hasn't decreased (prev = %.5f, cur = %.5f)." \
+            (dev_loss_prev, dev_loss_sum/len(dev_order))
+      if loss_increase_counter >= args.loss_increase_epochs:
         break
-      for param in optimizer.param_groups:
-        param['lr'] *= config['decay_rate']
+    else:
+      loss_increase_counter = 0
 
     dev_loss_prev = dev_loss_sum/len(dev_order)
 
