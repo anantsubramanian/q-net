@@ -42,8 +42,8 @@ def init_parser():
                       help = "Maximum number of dev articles to use, while reading from the dev "\
                              "json file.")
   parser.add_argument('--embed_size', type=int, default=300,
-                      help = "Embedding size to use for inputs. This *MUST* match the GloVe dimensions "\
-                             "when disable_glove is not set.")
+                      help = "Embedding size to use for inputs. This *MUST* match the pre-trained vector "\
+                             "dimensions when disable_pretrained is not set.")
   parser.add_argument('--hidden_size', type=int, default=300,
                       help = "Hidden dimension sizes to use throughout the network. For bi-directional "\
                              "layers, each direction is half this size.")
@@ -58,10 +58,10 @@ def init_parser():
   parser.add_argument('--decay_rate', type=float, default=0.75,
                       help = "The learning rate is multiplied by this value whenever validation loss "\
                              "doesn't decrease, until the minimum learning rate.")
-  parser.add_argument('--glove_path', default='../../data/glove/glove.840B.300d.txt',
-                      help = "Path to the GloVe vectors to use for the embedding layer.")
-  parser.add_argument('--disable_glove', action='store_true',
-                      help = "When provided, GloVe vectors are not used, and an embedding layer is "\
+  parser.add_argument('--vectors_path', default='../../data/fasttext/crawl-300d-2M.vec',
+                      help = "Path to the pre-trained vectors to use for the embedding layer.")
+  parser.add_argument('--disable_pretrained', action='store_true',
+                      help = "When provided, pretrained vectors are not used, and an embedding layer is "\
                              "learned in an end-to-end manner.")
   parser.add_argument('--ckpt', type=int, default=0,
                       help = "Checkpoint number to resume from. If 0, starts training from scratch.")
@@ -81,7 +81,7 @@ def init_parser():
                       help = "Optimizer to use. One of either 'SGD', 'Adamax' or 'Adadelta'.")
   parser.add_argument('--debug_level', type=int, default=0,
                       help = "Level 1: train and dev data sizes are reduced to 3200 each. "\
-                             "Level 2: GloVe vectors are not read. "\
+                             "Level 2: pretrained vectors are not read. "\
                              "Level 3: Timing statements are printed. "\
                              "Useful for debugging passes of differents parts of the code.")
   parser.add_argument('--dropout', type=float, default=0.4,
@@ -99,7 +99,7 @@ def init_parser():
                       help = "Number of MatchLSTM layers to use.")
   parser.add_argument('--num_selfmatch_layers', type=int, default=0,
                       help = "Number of passage self-matching layers to use.")
-  parser.add_argument('--f1_loss_multiplier', type=float, default=1.0,
+  parser.add_argument('--f1_loss_multiplier', type=float, default=0.0,
                       help = "Multiply the Expected F1 loss by this value. Useful as this loss has a "\
                              "smaller magnitude than the MLE loss.")
   parser.add_argument('--f1_loss_threshold', type=float, default=-1.0,
@@ -183,8 +183,8 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags,
              'decay_rate' : args.decay_rate,
              'lr' : args.learning_rate_start,
              'dropout' : args.dropout,
-             'glove_path' : args.glove_path,
-             'use_glove' : not args.disable_glove,
+             'vectors_path' : args.vectors_path,
+             'use_pretrained' : not args.disable_pretrained,
              'ckpt': args.ckpt,
              'optimizer': args.optimizer,
              'index_to_word': index_to_word,
@@ -207,7 +207,7 @@ def build_model(args, vocab_size, index_to_word, word_to_index, num_pos_tags,
   print "OOV Words:",
   print model.oov_list[:10]
 
-  if not args.disable_glove:
+  if not args.disable_pretrained:
     print "Embedding dim:", model.embedding.shape
   print "POS tags (%d total):" % (num_pos_tags), pos_tags
   print "NER tags (%d total):" % (num_ner_tags), ner_tags
@@ -361,7 +361,7 @@ def train_model(args):
   if last_done_epoch > 0:
     model = model.load(args.model_dir, last_done_epoch)
     print "Loaded model."
-    if not args.disable_glove:
+    if not args.disable_pretrained:
       print "Embedding shape:", model.embedding.shape
 
   if args.model_file is not None:
@@ -417,7 +417,7 @@ def train_model(args):
 
       print "Loss Total: %.5f, Cur: %.5f (in time %.2fs) " % \
             (train_loss_sum/(i+1), model.loss.data[0], time.time() - start_t),
-      if args.show_losses:
+      if args.show_losses and args.f1_loss_multiplier > 0:
         print "[MLE: %.5f, F1: %.5f]" % (model.mle_loss.data[0], model.f1_loss.data[0]),
       sys.stdout.flush()
       if args.debug_level >= 3:
@@ -531,7 +531,7 @@ def test_model(args):
     last_done_epoch = config['ckpt']
     model = model.load(args.model_dir, last_done_epoch)
     print "Loaded model."
-    if not args.disable_glove:
+    if not args.disable_pretrained:
       print "Embedding shape:", model.embedding.shape
 
   test_start_t = time.time()

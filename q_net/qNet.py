@@ -30,11 +30,11 @@ class qNet(nn.Module):
     self.hidden_size = config['hidden_size']
     self.attention_size = config['attention_size']
     self.lr_rate = config['lr']
-    self.glove_path = config['glove_path']
+    self.vectors_path = config['vectors_path']
     self.optimizer = config['optimizer']
     self.index_to_word = config['index_to_word']
     self.word_to_index = config['word_to_index']
-    self.use_glove = config['use_glove']
+    self.use_pretrained = config['use_pretrained']
     self.use_cuda = config['cuda']
     self.dropout = config['dropout']
     self.f1_loss_multiplier = config['f1_loss_multiplier']
@@ -50,9 +50,9 @@ class qNet(nn.Module):
     # Embedding look-up.
     self.oov_count = 0
     self.oov_list = []
-    if self.use_glove and debug_level <= 1:
+    if self.use_pretrained and debug_level <= 1:
       embeddings = np.zeros((self.vocab_size, self.embed_size))
-      with open(self.glove_path) as f:
+      with open(self.vectors_path) as f:
         for line in f:
           word = line[:line.index(" ")]
           if not word in self.word_to_index:
@@ -183,7 +183,7 @@ class qNet(nn.Module):
 
   # inp.shape = (seq_len, batch)
   # output.shape = (seq_len, batch, embed_size)
-  def get_glove_embeddings(self, inp):
+  def get_vector_embeddings(self, inp):
     return self.placeholder(self.embedding[inp])
 
   # Detach input of (seq_len, batch, ...) for the given indices,
@@ -521,7 +521,7 @@ class qNet(nn.Module):
   def forward(self, passage, question, answer, f1_matrices,
               question_pos_tags, question_ner_tags, passage_pos_tags,
               passage_ner_tags, answer_sentence):
-    if not self.use_glove:
+    if not self.use_pretrained:
       padded_passage = self.placeholder(passage[0], False)
       padded_question = self.placeholder(question[0], False)
     batch_size = passage[0].shape[1]
@@ -540,12 +540,12 @@ class qNet(nn.Module):
       self.get_mask_idxs(batch_size, max_question_len, question_lens)
 
     # Get embedded passage and question representations.
-    if not self.use_glove:
+    if not self.use_pretrained:
       p = torch.transpose(self.embedding(torch.t(padded_passage)), 0, 1)
       q = torch.transpose(self.embedding(torch.t(padded_question)), 0, 1)
     else:
-      p = self.get_glove_embeddings(passage[0])
-      q = self.get_glove_embeddings(question[0])
+      p = self.get_vector_embeddings(passage[0])
+      q = self.get_vector_embeddings(question[0])
 
     # {p,q}.shape = (seq_len, batch, embedding_dim + num_pos_tags + num_ner_tags)
     p = torch.cat((p, self.placeholder(passage_pos_tags),
