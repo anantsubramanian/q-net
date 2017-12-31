@@ -23,6 +23,9 @@ class qNet(nn.Module):
     self.build_model(debug_level)
     self.debug_level = debug_level
 
+    # Volatile variables for inference. If true, computation graph isn't built.
+    self.volatile = False
+
   # Load configuration options
   def load_from_config(self, config):
     self.embed_size = config['embed_size']
@@ -153,14 +156,28 @@ class qNet(nn.Module):
     self = torch.load(path + "/epoch_" + str(epoch) + ".pt")
     return self
 
+  def set_train(self):
+    self.volatile = False
+    self.train()
+
+  def set_eval(self):
+    self.volatile = True
+    self.eval()
+
+  def free_memory(self):
+    del self.loss
+    del self.mle_loss
+    if self.f1_loss_multiplier > 0:
+      del self.f1_loss
+
   def load_from_file(self, path):
     self = torch.load(path)
     return self
 
   def variable(self, v):
     if self.use_cuda:
-      return Variable(v, requires_grad = False).cuda()
-    return Variable(v, requires_grad = False)
+      return Variable(v, requires_grad = False, volatile = self.volatile).cuda()
+    return Variable(v, requires_grad = False, volatile = self.volatile)
 
   def placeholder(self, np_var, to_float=True):
     if to_float:
@@ -176,10 +193,18 @@ class qNet(nn.Module):
     if hidden_size is None:
       hidden_size = self.hidden_size
     if not for_cell:
-      return (Variable(tensor(1, batch_size, hidden_size).zero_()),
-              Variable(tensor(1, batch_size, hidden_size).zero_()))
-    return (Variable(tensor(batch_size, hidden_size).zero_()),
-            Variable(tensor(batch_size, hidden_size).zero_()))
+      return (Variable(tensor(1, batch_size, hidden_size).zero_(),
+                       requires_grad = False,
+                       volatile = self.volatile),
+              Variable(tensor(1, batch_size, hidden_size).zero_(),
+                       requires_grad = False,
+                       volatile = self.volatile))
+    return (Variable(tensor(batch_size, hidden_size).zero_(),
+                     volatile = self.volatile,
+                     requires_grad = False),
+            Variable(tensor(batch_size, hidden_size).zero_(),
+                     volatile = self.volatile,
+                     requires_grad = False))
 
   # inp.shape = (seq_len, batch)
   # output.shape = (seq_len, batch, embed_size)

@@ -90,9 +90,9 @@ def init_parser():
   parser.add_argument('--max_answer_span', type=int, default=15,
                       help = "Maximum length of answers during prediction. Search is performed over spans "\
                              "of this length.")
-  parser.add_argument('--num_preprocessing_layers', type=int, default=1,
+  parser.add_argument('--num_preprocessing_layers', type=int, default=3,
                       help = "Number of passage and question pre-processing layers.")
-  parser.add_argument('--num_postprocessing_layers', type=int, default=1,
+  parser.add_argument('--num_postprocessing_layers', type=int, default=3,
                       help = "Number of post-processing layers, before the answer pointer network.")
   parser.add_argument('--num_matchlstm_layers', type=int, default=1,
                       help = "Number of MatchLSTM layers to use.")
@@ -393,7 +393,7 @@ def train_model(args):
   for EPOCH in range(last_done_epoch+1, args.epochs):
     start_t = time.time()
     train_loss_sum = 0.0
-    model.train()
+    model.set_train()
     for i, num in enumerate(train_order):
       print "\r[%.2f%%] Train epoch %d, %.2f s - (Done %d of %d)" %\
             ((100.0 * (i+1))/len(train_order), EPOCH,
@@ -422,10 +422,7 @@ def train_model(args):
       sys.stdout.flush()
       if args.debug_level >= 3:
         print ""
-      del model.loss
-      del model.mle_loss
-      if args.f1_loss_multiplier > 0:
-        del model.f1_loss
+      model.free_memory()
 
     print "\nLoss: %.5f (in time %.2fs)" % \
           (train_loss_sum/len(train_order), time.time() - start_t)
@@ -448,7 +445,7 @@ def train_model(args):
     all_predictions = {}
     print "\nRunning on Dev."
 
-    model.eval()
+    model.set_eval()
     for i, num in enumerate(dev_order):
       print "\rDev: %.2f s (Done %d of %d)" %\
             ((time.time()-dev_start_t)*(len(dev_order)-i-1)/(i+1), i+1,
@@ -471,10 +468,7 @@ def train_model(args):
       dev_loss_sum += model.loss.data[0]
       print "[Average loss : %.5f, Cur: %.5f]" % (dev_loss_sum/(i+1), model.loss.data[0]),
       sys.stdout.flush()
-      del model.loss
-      del model.mle_loss
-      if args.f1_loss_multiplier > 0:
-        del model.f1_loss
+      model.free_memory()
 
     # Print dev stats for epoch
     print "\nDev Loss: %.4f (in time: %.2f s)" %\
@@ -490,7 +484,7 @@ def train_model(args):
     # Break if validation loss doesn't decrease for specified num of epochs.
     if dev_loss_sum/len(dev_order) >= dev_loss_prev:
       loss_increase_counter += 1
-      print "Dev loss hasn't decreased (prev = %.5f, cur = %.5f)." \
+      print "Dev loss hasn't decreased (prev = %.5f, cur = %.5f)." %\
             (dev_loss_prev, dev_loss_sum/len(dev_order))
       if loss_increase_counter >= args.loss_increase_epochs:
         break
@@ -538,7 +532,7 @@ def test_model(args):
   all_predictions = {}
   attention_starts = {}
   attention_ends = {}
-  model.eval()
+  model.set_eval()
 
   for i, num in enumerate(test_order):
     print "\rTest: %.2f s (Done %d of %d) " %\
@@ -574,10 +568,7 @@ def test_model(args):
     test_loss_sum += model.loss.data[0]
     print "[Average loss : %.5f]" % (test_loss_sum/(i+1)),
     sys.stdout.flush()
-    del model.loss
-    del model.mle_loss
-    if args.f1_loss_multiplier > 0:
-      del model.f1_loss
+    model.free_memory()
 
   # Print stats
   print "\nTest Loss: %.4f (in time: %.2f s)" %\
