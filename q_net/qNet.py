@@ -49,11 +49,13 @@ class qNet(nn.Module):
     self.num_matchlstm_layers = config['num_matchlstm_layers']
     self.num_selfmatch_layers = config['num_selfmatch_layers']
 
-  def build_model(self, debug_level):
+  def load_embeddings(self, debug_level):
     # Embedding look-up.
     self.oov_count = 0
     self.oov_list = []
+    known_idxs, unknown_idxs = [], []
     if self.use_pretrained and debug_level <= 1:
+      # Read embeddings from file.
       embeddings = np.zeros((self.vocab_size, self.embed_size))
       with open(self.vectors_path) as f:
         for line in f:
@@ -66,12 +68,31 @@ class qNet(nn.Module):
         if sum(embedding) == 0:
           self.oov_count += 1
           self.oov_list.append(self.index_to_word[i])
+          unknown_idxs.append(i)
+        else:
+          known_idxs.append(i)
+
+      # Initialize unknown word embeddings by sampling from multivariate normal distribution,
+      # with mean and covariance as sample mean and covariance of known embeddings.
+      known_embeddings = embeddings[known_idxs]
+      np_rng = np.random.RandomState(123)
+      known_mean = np.mean(known_embeddings, axis=0)
+      known_covar = np.cov(known_embeddings, rowvar=0)
+      unknown_embeddings = np_rng.multivariate_normal(mean=known_mean, cov=known_covar,
+                                                      size=len(unknown_idxs)).astype(np.float32)
+      embeddings[unknown_idxs] = unknown_embeddings
       self.embedding = embeddings
     elif debug_level >= 2:
+      # Initialize all embeddings with zero for debugging.
       self.embedding = np.zeros((self.vocab_size, self.embed_size))
     else:
+      # Create trainable embeddings layer.
       self.embedding = nn.Embedding(self.vocab_size, self.embed_size,
                                     self.word_to_index['<pad>'])
+
+  def build_model(self, debug_level):
+    # Read embeddings from file, create all zeros for debug, or make a trainable layer.
+    self.load_embeddings(debug_level)
 
     # Passage and Question pre-processing LSTMs (matrices Hp and Hq respectively).
     self.preprocessing_lstm = \

@@ -90,9 +90,9 @@ def init_parser():
   parser.add_argument('--max_answer_span', type=int, default=15,
                       help = "Maximum length of answers during prediction. Search is performed over spans "\
                              "of this length.")
-  parser.add_argument('--num_preprocessing_layers', type=int, default=3,
+  parser.add_argument('--num_preprocessing_layers', type=int, default=2,
                       help = "Number of passage and question pre-processing layers.")
-  parser.add_argument('--num_postprocessing_layers', type=int, default=3,
+  parser.add_argument('--num_postprocessing_layers', type=int, default=2,
                       help = "Number of post-processing layers, before the answer pointer network.")
   parser.add_argument('--num_matchlstm_layers', type=int, default=1,
                       help = "Number of MatchLSTM layers to use.")
